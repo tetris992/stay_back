@@ -1,0 +1,47 @@
+{
+   "checksum": "c2d0d2a65f2540e52a26ebce7074c54a",
+   "roots": {
+      "bookmark_bar": {
+         "children": [  ],
+         "date_added": "13372616117320166",
+         "date_last_used": "0",
+         "date_modified": "0",
+         "guid": "0bc5d13f-2cba-5d74-951f-3f233fe6c908",
+         "id": "1",
+         "name": "Bookmarks Bar",
+         "type": "folder"
+      },
+      "other": {
+         "children": [ {
+            "date_added": "13372616129266518",
+            "date_last_used": "0",
+            "guid": "94f7f392-f98f-4439-a9f6-1b31dacbbcd9",
+            "id": "5",
+            "meta_info": {
+               "power_bookmark_meta": ""
+            },
+            "name": "여기어때 파트너센터",
+            "type": "url",
+            "url": "https://partner.goodchoice.kr/reservations/reservation-list"
+         } ],
+         "date_added": "13372616117320167",
+         "date_last_used": "0",
+         "date_modified": "13372616129266518",
+         "guid": "82b081ec-3dd3-529c-8475-ab6c344590dd",
+         "id": "2",
+         "name": "Other Bookmarks",
+         "type": "folder"
+      },
+      "synced": {
+         "children": [  ],
+         "date_added": "13372616117320168",
+         "date_last_used": "0",
+         "date_modified": "0",
+         "guid": "4cf2e351-0e85-532b-bb37-df045d8f8d0f",
+         "id": "3",
+         "name": "Mobile Bookmarks",
+         "type": "folder"
+      }
+   },
+   "version": 1
+}

@@ -1,0 +1,12 @@
+# Node modules / build 산출물
+node_modules/
+.cache/
+dist/
+build/
+
+# Git이 추적하면 안 되는 대형파일
+*.pack
+
+# 기타
+*.log
+.DS_Store
