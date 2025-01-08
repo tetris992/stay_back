@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Invoice <%= reservation.reservationNo %></title>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; }
+    .header { text-align: center; }
+    .header img { max-width: 150px; }
+    .details { margin-top: 20px; }
+    .details th, .details td { padding: 10px; text-align: left; }
+    .footer { margin-top: 30px; text-align: center; font-size: 0.9rem; color: #777; }
+    .table { width: 100%; border-collapse: collapse; }
+    .table th, .table td { border: 1px solid #ddd; padding: 8px; }
+    .table th { background-color: #f2f2f2; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <img src="https://yourhotel.com/logo.png" alt="Hotel Logo"> <!-- 호텔 로고 추가 -->
+    <h1>호텔 인보이스</h1>
+    <h2>예약 번호: <%= reservation.reservationNo %></h2>
+  </div>
+  <div class="details">
+    <table class="table">
+      <tr>
+        <th>예약자 이름:</th>
+        <td><%= reservation.customerName %></td>
+      </tr>
+      <tr>
+        <th>체크인:</th>
+        <td><%= reservation.checkIn %> (<%= reservation.checkInTime %>)</td>
+      </tr>
+      <tr>
+        <th>체크아웃:</th>
+        <td><%= reservation.checkOut %> (<%= reservation.checkOutTime %>)</td>
+      </tr>
+      <tr>
+        <th>객실 정보:</th>
+        <td><%= reservation.roomInfo %></td>
+      </tr>
+      <tr>
+        <th>가격:</th>
+        <td><%= reservation.price %>원</td>
+      </tr>
+      <tr>
+        <th>예약일:</th>
+        <td><%= reservation.reservationDate %></td>
+      </tr>
+      <tr>
+        <th>고객 요청:</th>
+        <td><%= reservation.specialRequests || '없음' %></td>
+      </tr>
+    </table>
+  </div>
+  <div class="footer">
+    <p>호텔 주소: <%= hotelSettings.address %></p>
+    <p>연락처: <%= hotelSettings.phoneNumber %></p>
+    <p>이메일: <%= hotelSettings.email %></p>
+  </div>
+</body>
+</html>

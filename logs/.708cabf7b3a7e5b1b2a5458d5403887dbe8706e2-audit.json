@@ -1,0 +1,15 @@
+{
+    "keep": {
+        "days": true,
+        "amount": 30
+    },
+    "auditLog": "/Users/nomac74/project24/Hotel-reservation-system/backend/logs/.708cabf7b3a7e5b1b2a5458d5403887dbe8706e2-audit.json",
+    "files": [
+        {
+            "date": 1733986189796,
+            "name": "/Users/nomac74/project24/Hotel-reservation-system/backend/logs/2024-12-12-error.log",
+            "hash": "61b45bc9c6a13404617b5da5b79eaca1abc4321df0dd3480b3f7fb627517a5d7"
+        }
+    ],
+    "hashType": "sha256"
+}
