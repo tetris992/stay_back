@@ -7,6 +7,7 @@ import initializeHotelCollection from '../utils/initializeHotelCollection.js';
 import availableOTAs from '../config/otas.js';
 import { parseDate } from '../utils/dateParser.js';
 import { isCancelledStatus } from '../utils/isCancelledStatus.js';
+import { format } from 'date-fns';
 
 // 전화번호에서 숫자만 추출하는 헬퍼 함수
 function sanitizePhoneNumber(phoneNumber) {
@@ -51,7 +52,14 @@ export const getReservations = async (req, res) => {
   const sort = { createdAt: -1 };
   try {
     const reservations = await Reservation.find(filter).sort(sort);
-    res.send(reservations);
+    const plain = reservations.map((doc) => {
+      const obj = doc.toObject();
+      obj.checkIn = format(obj.checkIn, "yyyy-MM-dd'T'HH:mm");
+      obj.checkOut = format(obj.checkOut, "yyyy-MM-dd'T'HH:mm");
+      obj.reservationDate = format(obj.reservationDate, "yyyy-MM-dd'T'HH:mm");
+      return obj;
+    });
+    res.send(plain);
   } catch (error) {
     logger.error('Error fetching reservations:', error);
     res.status(500).send({ message: '서버 오류가 발생했습니다.' });
