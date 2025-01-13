@@ -6,15 +6,7 @@ import connectToChrome from './browserConnection.js';
 import HotelSettingsModel from '../models/HotelSettings.js';
 
 /**
- * 이미 특정 도메인을 연 Page(탭)가 있으면 재사용하고,
- * 없으면 새 탭을 열어 fallbackURL로 이동한 뒤 그 Page를 반환
- *
- * @param {Browser} browser - Puppeteer Browser 인스턴스
- * @param {String} domain   - 예: 'partner.yanolja.com'
- * @param {String} fallbackURL - 예: 'https://partner.yanolja.com/reservation/search'
- * @returns {Promise<Page>} - 재사용된 Page 혹은 신규 생성된 Page
- */
-/**
+ * 로그인 수행때 인트로 페이지가 나타나는 경우를 대비한 함수
  * (추가) DB 쿠키 재활용 시 필요할 수 있는 safe 변환 함수
  * 쿠키에 필수 필드만 남기고, 불필요하거나 유효하지 않은 값(expires=-1 등)을 교정
  */
@@ -49,19 +41,50 @@ export async function findOrCreatePage(browser, domain, fallbackURL) {
 }
 
 /**
- * 야놀자 로그인 수행 함수
- *  1) 야놀자 로그인 페이지로 이동
- *  2) 기존 자동완성(아이디, 비번) 지우기
- *  3) 새 값 입력
- *  4) 로그인 버튼 클릭
- *  5) 성공 시 쿠키를 DB(HotelSettings.otaCredentials.yanolja.cookies)에 저장
- *
- * @param {Page} page - Puppeteer Page
- * @param {String} hotelId
- * @param {String} yanoljaLoginId
- * @param {String} yanoljaLoginPw
- * @returns {Promise<Array>} - 로그인 후 획득한 쿠키
+ * 이미 로그인된 상태인지 간단히 체크
+ * (메인 페이지에서 로그인창(#input-35) 있으면 => 로그인 필요)
  */
+async function checkAlreadyLoggedIn(page) {
+  const loginIdSelector = '#input-35';
+  try {
+    // 3초 이내에 로그인창이 보이면 => 아직 로그인 안 됨
+    await page.waitForSelector(loginIdSelector, { timeout: 3000 });
+    return false; // 로그인창 표시 => 로그인 필요
+  } catch (err) {
+    // 셀렉터 미등장 => 이미 로그인 상태로 판단
+    return true;
+  }
+}
+
+/**
+ * (추가) “인트로 페이지”에서 “파트너센터 로그인” 버튼이 보이면 클릭
+ *  - 예: https://partner.yanolja.com/intro
+ *  - Selector:
+ *    #root > div.MuiBox-root.css-0 > div > div.MuiGrid-root.MuiGrid-container.e1rt3jk68.css-dokbh6
+ *    > div.MuiStack-root.e1rt3jk65.css-jkbg3l > div:nth-child(3) > button > span.MuiTypography-root...
+ */
+async function handleIntroPage(page) {
+  try {
+    // (1) 혹시 /intro로 자동 리다이렉트 되면, 해당 셀렉터(파트너센터 로그인 버튼)가 나타날 수도 있음
+    //     ※ 버튼 셀렉터는 버전/화면에 따라 변동될 가능성 있으니 주의
+    const partnerCenterLoginBtn =
+      '#root > div.MuiBox-root.css-0 > div > div.MuiGrid-root.MuiGrid-container.e1rt3jk68.css-dokbh6 > div.MuiStack-root.e1rt3jk65.css-jkbg3l > div:nth-child(3) > button';
+
+    // (2) 2~3초 내에 버튼을 찾는다
+    await page.waitForSelector(partnerCenterLoginBtn, { timeout: 3000 });
+    logger.info('[Yanolja Intro] "파트너센터 로그인" 버튼 발견 → 클릭 시도');
+
+    await page.click(partnerCenterLoginBtn);
+
+    // (3) 클릭 후 네비게이션 대기 (로그인화면으로 넘어갈 수 있음)
+    await page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 60000 });
+    logger.info('[Yanolja Intro] 인트로 → 로그인 페이지 이동 완료');
+  } catch (err) {
+    // 버튼 미발견 => 인트로 페이지가 아닐 수도 있고, 이미 로그인일 수도 있음
+    logger.warn('[Yanolja Intro] 인트로 버튼 미발견 or 클릭 실패(무시)');
+  }
+}
+
 export async function loginYanolja(
   page,
   hotelId,
@@ -69,6 +92,16 @@ export async function loginYanolja(
   yanoljaLoginPw
 ) {
   try {
+    // (A) 인트로 페이지 시도
+    await page.goto('https://partner.yanolja.com/intro', {
+      waitUntil: 'networkidle0',
+      timeout: 60000,
+    });
+    logger.info('[Yanolja] 인트로 페이지 접근 시도');
+
+    // (B) 인트로 화면에서 ‘파트너센터 로그인’ 버튼 클릭 (있다면)
+    await handleIntroPage(page);
+
     const loginUrl =
       'https://account.yanolja.biz/?serviceType=PC&redirectURL=%2F&returnURL=https%3A%2F%2Fpartner.yanolja.com%2Fauth%2Flogin';
     await page.goto(loginUrl, { waitUntil: 'networkidle0', timeout: 60000 });
@@ -142,21 +175,21 @@ export async function loginYanolja(
   }
 }
 
-/**
- * 이미 로그인되어 있나? 간단한 판단 로직
- * - 메인 페이지에서 로그인창(#input-35)이 뜨는지 짧게 waitForSelector 시도
- */
-async function checkAlreadyLoggedIn(page) {
-  const loginIdSelector = '#input-35';
-  try {
-    await page.waitForSelector(loginIdSelector, { timeout: 3000 });
-    // 여기까지 왔다는 건 => 로그인창이 있음 => 로그인 필요
-    return false;
-  } catch {
-    // 셀렉터가 안 보이면 => 이미 로그인됨
-    return true;
-  }
-}
+// /**
+//  * 이미 로그인되어 있나? 간단한 판단 로직
+//  * - 메인 페이지에서 로그인창(#input-35)이 뜨는지 짧게 waitForSelector 시도
+//  */
+// async function checkAlreadyLoggedIn(page) {
+//   const loginIdSelector = '#input-35';
+//   try {
+//     await page.waitForSelector(loginIdSelector, { timeout: 3000 });
+//     // 여기까지 왔다는 건 => 로그인창이 있음 => 로그인 필요
+//     return false;
+//   } catch {
+//     // 셀렉터가 안 보이면 => 이미 로그인됨
+//     return true;
+//   }
+// }
 
 /**
  * 예약 목록 추출(테이블 파싱)
@@ -347,7 +380,7 @@ export default async function scrapeYanoljaMotel(hotelId, siteName) {
 
     // 6) 예약 목록 추출
     const reservations = await extractReservations(page);
-    logger.info(`추출된 예약 데이터: ${JSON.stringify(reservations, null, 2)}`);
+    // logger.info(`추출된 예약 데이터: ${JSON.stringify(reservations, null, 2)}`);
 
     if (!reservations || reservations.length === 0) {
       logger.info(`${siteName}(${hotelId})에 예약 없음. 서버에 전송안함.`);
@@ -385,13 +418,13 @@ export default async function scrapeYanoljaMotel(hotelId, siteName) {
       logger.info(`두 번째 예약 검색 URL 이동 완료 (${startDate}~${endDate})`);
 
       const newReservations = await extractReservations(page);
-      logger.info(
-        `숙소 전환 후 새 예약 데이터: ${JSON.stringify(
-          newReservations,
-          null,
-          2
-        )}`
-      );
+      // logger.info(
+      //   `숙소 전환 후 새 예약 데이터: ${JSON.stringify(
+      //     newReservations,
+      //     null,
+      //     2
+      //   )}`
+      // );
 
       if (newReservations && newReservations.length > 0) {
         await sendReservations(hotelId, siteName, newReservations);
@@ -417,7 +450,8 @@ export default async function scrapeYanoljaMotel(hotelId, siteName) {
       logger.info(`페이지를 닫았습니다: ${siteName} (hotelId=${hotelId}).`);
     }
     if (browser) {
-      await browser.disconnect(); // 브라우저 세션 해제
+      // await browser.disconnect(); // 브라우저 연결 해제 브라우저는 메모리에 살아있음, 결국 메모리 점유율이 올라감.
+      await browser.close(); // 브라우저 종료
       logger.info(`브라우저 연결 해제: ${siteName} (hotelId=${hotelId}).`);
     }
   }

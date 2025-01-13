@@ -97,14 +97,31 @@ export const createOrUpdateReservations = async (req, res) => {
         continue;
       }
 
+      // --- [수정된 결제 방식 처리 로직 시작] ---
       let paymentMethod = '정보 없음';
+
       if (availableOTAs.includes(siteName)) {
-        paymentMethod = 'OTA';
+        // (1) 사이트가 OTA(아고다, 부킹, 익스피디아 등)일 때
+        if (
+          // reservation.paymentMethod가 있고 (예: "아고다에 요금 지불")
+          reservation.paymentMethod &&
+          reservation.paymentMethod.trim() !== ''
+        ) {
+          // => 그대로 저장 (문자열로 그대로)
+          paymentMethod = reservation.paymentMethod.trim();
+        } else {
+          // => 결제 방법 문구가 없는 경우 "OTA"로
+          paymentMethod = 'OTA';
+        }
       } else if (siteName === '현장예약') {
+        // (2) 현장예약인 경우 기존 로직 그대로
         paymentMethod = reservation.paymentMethod || 'Pending';
       } else {
+        // (3) 그 외 (기타 사이트)
+        //   → 결제방법이 비어있으면 'Pending', 아니면 reservation.paymentMethod 그대로
         paymentMethod = reservation.paymentMethod || 'Pending';
       }
+      // --- [수정된 결제 방식 처리 로직 끝] ---
 
       const sanitizedPhoneNumber = sanitizePhoneNumber(
         reservation.phoneNumber || ''
@@ -126,7 +143,7 @@ export const createOrUpdateReservations = async (req, res) => {
         additionalFees: reservation.additionalFees || 0,
         couponInfo: reservation.couponInfo || null,
         paymentStatus: reservation.paymentStatus || '확인 필요',
-        paymentMethod: paymentMethod,
+        paymentMethod,
         hotelId: finalHotelId,
       };
 

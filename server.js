@@ -35,11 +35,13 @@ app.use(hpp()); // HTTP 파라미터 폴터링
 
 // CORS_ORIGIN 환경변수가 비어있는 경우를 대비해 처리
 let allowedOrigins = [
-  'https://ad.goodchoice.kr', 
+  'https://ad.goodchoice.kr',
   'https://partner.goodchoice.kr',
   'https://partner.yanolja.com',
-  'http://localhost:3000',
-  'chrome-extension://ohekbjnbdpnkbahggohidddlgdbbggph',
+  'https://ycs.agoda.com',
+  'http://localhost:3000', //개발용 react 서버 주소 배포후 실제 프런트엔드 도메인주소를 넣어야 함?
+  'https://container-service-1.302qcbg9eaynw.ap-northeast-2.cs.amazonlightsail.com',
+  'chrome-extension://bhfggeheelkddgmlegkppgpkmioldfkl',
 ];
 if (process.env.CORS_ORIGIN) {
   // 쉼표로 구분된 여러 도메인을 환경변수에서 가져오기
@@ -73,16 +75,9 @@ app.use(limiter); // 속도 제한 미들웨어 적용
 // MongoDB 연결
 connectDB();
 
-// // scraperManager 초기화 함수
-// const initializeScraper = async () => {
-//   try {
-//     await scraperManager.initializeQueue(); // scraperManager 큐 초기화
-//     logger.info('ScraperManager initialized successfully.');
-//   } catch (error) {
-//     logger.error('Failed to initialize scraperManager:', error);
-//     process.exit(1); // 초기화 실패 시 서버 종료
-//   }
-// };
+app.get('/', (req, res) => {
+  res.status(200).send('OK - HMS Backend is running');
+});
 
 // 라우트 설정 해당 경로에 라우트 마운트
 app.use('/auth', authRoutes);

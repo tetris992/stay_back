@@ -61,12 +61,10 @@ const ReservationSchema = new mongoose.Schema(
     },
     paymentStatus: {
       type: String,
-      default: '미결제',
+      default: '',
     },
     paymentMethod: {
       type: String,
-      enum: ['Card', 'Cash', 'Account Transfer', 'Pending', 'OTA'],
-      required: false,
       default: 'Pending',
     },
     isCancelled: {
