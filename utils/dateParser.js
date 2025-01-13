@@ -35,6 +35,8 @@ export const parseDate = (dateString) => {
 
   const dateFormats = [
     // 한국어 날짜 형식
+    "yyyy-MM-dd'T'HH:mm",
+    "yyyy-MM-dd'T'HH:mm:ss",
     'yyyy년 M월 d일 HH:mm',
     'yyyy년 MM월 dd일 HH:mm',
     'yyyy년 M월 d일',
