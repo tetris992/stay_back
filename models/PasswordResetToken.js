@@ -25,8 +25,11 @@ const PasswordResetTokenSchema = new mongoose.Schema({
 });
 
 // 토큰의 만료를 자동으로 처리하기 위한 TTL 인덱스 설정
-PasswordResetTokenSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+// PasswordResetTokenSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
-const PasswordResetToken = mongoose.model('PasswordResetToken', PasswordResetTokenSchema);
+const PasswordResetToken = mongoose.model(
+  'PasswordResetToken',
+  PasswordResetTokenSchema
+);
 
 export default PasswordResetToken;

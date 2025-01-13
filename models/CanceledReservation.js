@@ -65,8 +65,6 @@ const CanceledReservationSchema = new mongoose.Schema(
     },
     paymentMethod: {
       type: String,
-      enum: ['Card', 'Cash', 'Account Transfer', 'Pending', 'OTA'],
-      required: false,
       default: 'Pending',
     },
     isCancelled: {
@@ -90,7 +88,11 @@ const getCanceledReservationModel = (hotelId) => {
     return mongoose.models[collectionName];
   }
 
-  return mongoose.model(collectionName, CanceledReservationSchema, collectionName);
+  return mongoose.model(
+    collectionName,
+    CanceledReservationSchema,
+    collectionName
+  );
 };
 
 export default getCanceledReservationModel;
