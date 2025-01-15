@@ -54,7 +54,7 @@ export const loginUser = async (req, res) => {
       res.cookie('refreshToken', refreshTokenDoc.token, {
         httpOnly: true,
         secure: process.env.NODE_ENV === 'production',
-        sameSite: 'strict',
+        sameSite: 'strict',// 
         maxAge: 365 * 24 * 60 * 60 * 1000, // 1년
       });
 

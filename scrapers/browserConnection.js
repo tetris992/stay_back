@@ -46,7 +46,7 @@ const connectToChrome = async () => {
 
     // 6) Puppeteer.launch() (헤드리스 OFF)
     const browser = await puppeteer.launch({
-      headless: true, // 테스트 시 실제 창이 보이도록
+      headless: false, // 테스트 시 실제 창이 보이도록
       executablePath: useExecutablePath,
       args: [
         '--no-sandbox',
