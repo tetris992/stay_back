@@ -19,7 +19,7 @@ import authRoutes from './routes/auth.js';
 import chromeRoutes from './routes/chrome.js';
 import scraperTasksRoutes from './routes/scraperTasks.js'; // ScraperTasks 라우트 추가
 import scraperManager from './scrapers/scraperManager.js'; // ScraperManager 임포트
-// import memoRoutes from './routes/memoRoutes.js';
+// import saveCookiesRoutes from './routes/saveCookies.js';
 
 dotenv.config();
 
@@ -35,6 +35,7 @@ app.use(hpp()); // HTTP 파라미터 폴터링
 
 // CORS_ORIGIN 환경변수가 비어있는 경우를 대비해 처리
 let allowedOrigins = [
+  'https://tetris992.github.io',
   'https://ad.goodchoice.kr',
   'https://partner.goodchoice.kr',
   'https://partner.yanolja.com',
@@ -87,6 +88,7 @@ app.use('/status', statusRoutes);
 app.use('/chrome', chromeRoutes);
 app.use('/api/scrape', scraperTasksRoutes);
 // app.use('/memo', memoRoutes);
+// app.use('/api', saveCookiesRoutes);
 
 // 오류 처리 미들웨어
 app.use((err, req, res, next) => {
