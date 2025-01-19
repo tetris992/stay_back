@@ -82,6 +82,9 @@ export const createOrUpdateReservations = async (req, res) => {
     const Reservation = getReservationModel(finalHotelId);
     const CanceledReservation = getCanceledReservationModel(finalHotelId);
 
+    // [추가된 부분: 새로 생성된 예약들의 _id를 담을 배열]
+    const createdReservationIds = [];
+
     for (const reservation of reservations) {
       if (!reservation.reservationNo || reservation.reservationNo === 'N/A') {
         logger.warn(
@@ -234,11 +237,17 @@ export const createOrUpdateReservations = async (req, res) => {
           });
           await newReservation.save();
           logger.info(`Created new reservation: ${reservationId}`);
+
+          // [추가된 부분: 새로 생성된 예약의 _id를 createdReservationIds에 푸시]
+          createdReservationIds.push(reservationId);
         }
       }
     }
-
-    res.status(201).send({ message: 'Reservations processed successfully' });
+    // [추가된 부분: 응답에 createdReservationIds 배열 포함]
+    res.status(201).json({
+      message: 'Reservations processed successfully',
+      createdReservationIds,
+    });
   } catch (error) {
     logger.error('Error processing reservations:', error);
     res.status(500).send({ message: '서버 오류가 발생했습니다.' });

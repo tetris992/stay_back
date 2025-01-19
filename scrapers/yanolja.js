@@ -1,105 +1,60 @@
-// backend/scrapers/yanolja.js
+// 파일: backend/scrapers/yanolja.js
 import moment from 'moment';
 import { sendReservations } from './scrapeHelper.js'; // 공통 헬퍼 모듈
 import logger from '../utils/logger.js';
 import connectToChrome from './browserConnection.js';
 import HotelSettingsModel from '../models/HotelSettings.js';
 
-/**
- * 로그인 수행때 인트로 페이지가 나타나는 경우를 대비한 함수
- * (추가) DB 쿠키 재활용 시 필요할 수 있는 safe 변환 함수
- * 쿠키에 필수 필드만 남기고, 불필요하거나 유효하지 않은 값(expires=-1 등)을 교정
- */
+// (1) 쿠키 안전 변환
 function toSafeCookies(storedCookies = []) {
   return storedCookies.map((c) => ({
     name: c.name,
     value: c.value,
     domain: c.domain || 'partner.yanolja.com',
     path: c.path || '/',
-    expires: c.expires > 0 ? c.expires : 0, // 0보다 작으면 0으로
+    expires: c.expires > 0 ? c.expires : 0,
     httpOnly: !!c.httpOnly,
     secure: !!c.secure,
     sameSite: c.sameSite || 'None',
   }));
 }
 
-export async function findOrCreatePage(browser, domain, fallbackURL) {
-  const pages = await browser.pages();
-  for (const pg of pages) {
-    if (pg.isClosed()) continue; // 닫힌 탭 무시
-    const url = pg.url();
-    if (url.includes(domain)) {
-      logger.info(`Reusing tab: ${url}`);
-      return pg;
-    }
-  }
-  logger.info(`No existing tab for '${domain}'. Opening new page...`);
-  const newPage = await browser.newPage();
-  await newPage.goto(fallbackURL, { waitUntil: 'networkidle0' });
-  logger.info(`Opened new tab at '${fallbackURL}'`);
-  return newPage;
-}
-
-/**
- * 이미 로그인된 상태인지 간단히 체크
- * (메인 페이지에서 로그인창(#input-35) 있으면 => 로그인 필요)
- */
+// (2) 로그인 여부 체크
 async function checkAlreadyLoggedIn(page) {
   const loginIdSelector = '#input-35';
   try {
-    // 3초 이내에 로그인창이 보이면 => 아직 로그인 안 됨
     await page.waitForSelector(loginIdSelector, { timeout: 3000 });
-    return false; // 로그인창 표시 => 로그인 필요
-  } catch (err) {
-    // 셀렉터 미등장 => 이미 로그인 상태로 판단
+    return false; // 로그인창 표시됨 => 로그인 필요
+  } catch {
+    // 셀렉터 안보임 => 이미 로그인
     return true;
   }
 }
 
-/**
- * (추가) “인트로 페이지”에서 “파트너센터 로그인” 버튼이 보이면 클릭
- *  - 예: https://partner.yanolja.com/intro
- *  - Selector:
- *    #root > div.MuiBox-root.css-0 > div > div.MuiGrid-root.MuiGrid-container.e1rt3jk68.css-dokbh6
- *    > div.MuiStack-root.e1rt3jk65.css-jkbg3l > div:nth-child(3) > button > span.MuiTypography-root...
- */
+// (3) 인트로 페이지에서 "파트너센터 로그인" 버튼
 async function handleIntroPage(page) {
   try {
-    // (1) 혹시 /intro로 자동 리다이렉트 되면, 해당 셀렉터(파트너센터 로그인 버튼)가 나타날 수도 있음
-    //     ※ 버튼 셀렉터는 버전/화면에 따라 변동될 가능성 있으니 주의
     const partnerCenterLoginBtn =
       '#root > div.MuiBox-root.css-0 > div > div.MuiGrid-root.MuiGrid-container.e1rt3jk68.css-dokbh6 > div.MuiStack-root.e1rt3jk65.css-jkbg3l > div:nth-child(3) > button';
-
-    // (2) 2~3초 내에 버튼을 찾는다
     await page.waitForSelector(partnerCenterLoginBtn, { timeout: 3000 });
-    logger.info('[Yanolja Intro] "파트너센터 로그인" 버튼 발견 → 클릭 시도');
+    logger.info('[Yanolja Intro] "파트너센터 로그인" 버튼 발견 → 클릭');
 
     await page.click(partnerCenterLoginBtn);
-
-    // (3) 클릭 후 네비게이션 대기 (로그인화면으로 넘어갈 수 있음)
     await page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 60000 });
-    logger.info('[Yanolja Intro] 인트로 → 로그인 페이지 이동 완료');
+    logger.info('[Yanolja Intro] 인트로→로그인 페이지 이동 완료');
   } catch (err) {
-    // 버튼 미발견 => 인트로 페이지가 아닐 수도 있고, 이미 로그인일 수도 있음
     logger.warn('[Yanolja Intro] 인트로 버튼 미발견 or 클릭 실패(무시)');
   }
 }
 
-export async function loginYanolja(
-  page,
-  hotelId,
-  yanoljaLoginId,
-  yanoljaLoginPw
-) {
+// (4) 야놀자 로그인
+export async function loginYanolja(page, hotelId, yanoljaLoginId, yanoljaLoginPw) {
   try {
-    // (A) 인트로 페이지 시도
     await page.goto('https://partner.yanolja.com/intro', {
       waitUntil: 'networkidle0',
       timeout: 60000,
     });
     logger.info('[Yanolja] 인트로 페이지 접근 시도');
-
-    // (B) 인트로 화면에서 ‘파트너센터 로그인’ 버튼 클릭 (있다면)
     await handleIntroPage(page);
 
     const loginUrl =
@@ -110,22 +65,19 @@ export async function loginYanolja(
     const loginIdSelector = '#input-35';
     const loginPwSelector = '#input-41';
 
-    // 아이디 입력 필드
+    // 아이디 입력
     await page.waitForSelector(loginIdSelector, { timeout: 15000 });
-
     await page.click(loginIdSelector, { clickCount: 3 });
     await page.keyboard.press('Backspace');
     await page.type(loginIdSelector, yanoljaLoginId, { delay: 50 });
-    logger.info(`[Yanolja] 아이디 입력 완료: ${yanoljaLoginId}`);
 
-    // 비밀번호 입력 필드
+    // 비밀번호 입력
     await page.waitForSelector(loginPwSelector, { timeout: 15000 });
     await page.click(loginPwSelector, { clickCount: 3 });
     await page.keyboard.press('Backspace');
     await page.type(loginPwSelector, yanoljaLoginPw, { delay: 50 });
-    logger.info('[Yanolja] 비밀번호 입력 완료');
 
-    // 로그인 유지 체크박스 (선택)
+    // 로그인 유지 체크 (옵션)
     const stayLoggedInSelector =
       '#app > div > div.wrap__content > div > div.v-input.inp-checkbox.v-input--hide-details.theme--light.v-input--selection-controls.v-input--checkbox > div > div > div > div';
     try {
@@ -137,21 +89,18 @@ export async function loginYanolja(
     }
 
     // 로그인 버튼
-    const loginButtonSelector =
-      '#app > div > div.wrap__content > div > button > span';
+    const loginButtonSelector = '#app > div > div.wrap__content > div > button > span';
     await page.waitForSelector(loginButtonSelector, { timeout: 15000 });
     await page.click(loginButtonSelector);
     logger.info('[Yanolja] 로그인 버튼 클릭');
 
-    // (5) 페이지 로딩 대기
+    // 로딩 대기
     await page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 60000 });
     logger.info('[Yanolja] 로그인 후 페이지 로딩 완료');
 
-    // (6) 로그인 후 쿠키 추출
+    // 쿠키 추출 후 DB 저장
     const cookies = await page.cookies();
     logger.info(`[Yanolja] 로그인 후 쿠키 length: ${cookies.length}`);
-
-    // 쿠키 DB 저장
     try {
       const updated = await HotelSettingsModel.findOneAndUpdate(
         { hotelId },
@@ -159,9 +108,7 @@ export async function loginYanolja(
         { new: true }
       );
       if (updated) {
-        logger.info(
-          `[Yanolja] 호텔ID=${hotelId} 쿠키 DB저장 완료 (개수=${cookies.length}).`
-        );
+        logger.info(`[Yanolja] 호텔ID=${hotelId} 쿠키 DB저장 완료 (개수=${cookies.length}).`);
       } else {
         logger.warn(`[Yanolja] HotelSettings 미존재? hotelId=${hotelId}`);
       }
@@ -175,62 +122,41 @@ export async function loginYanolja(
   }
 }
 
-// /**
-//  * 이미 로그인되어 있나? 간단한 판단 로직
-//  * - 메인 페이지에서 로그인창(#input-35)이 뜨는지 짧게 waitForSelector 시도
-//  */
-// async function checkAlreadyLoggedIn(page) {
-//   const loginIdSelector = '#input-35';
-//   try {
-//     await page.waitForSelector(loginIdSelector, { timeout: 3000 });
-//     // 여기까지 왔다는 건 => 로그인창이 있음 => 로그인 필요
-//     return false;
-//   } catch {
-//     // 셀렉터가 안 보이면 => 이미 로그인됨
-//     return true;
-//   }
-// }
-
-/**
- * 예약 목록 추출(테이블 파싱)
- * @param {Page} page - Puppeteer Page
- * @returns {Array} - 예약 정보 배열
- */
+// (5) 예약 목록 추출
 export async function extractReservations(page) {
-  return page.$$eval('table > tbody > tr', (rows) =>
-    rows
+  const rows = await page.$$('table > tbody > tr');
+  if (!rows || rows.length === 0) return [];
+
+  return page.$$eval('table > tbody > tr', (trs) =>
+    trs
       .map((row) => {
-        const reservationNo = row
-          .querySelector('td.ReservationSearchListItem__no > span')
+        const reservationNo = row.querySelector('td.ReservationSearchListItem__no > span')
           ?.innerText.trim();
-        const reservationStatus = row
-          .querySelector('td.ReservationSearchListItem__status')
+        const reservationStatus = row.querySelector('td.ReservationSearchListItem__status')
           ?.innerText.trim();
-        const customerName = row
-          .querySelector(
-            'td.ReservationSearchListItem__visitor > span:nth-child(1)'
-          )
-          ?.innerText.trim();
-        const roomInfo = row
-          .querySelector('td.ReservationSearchListItem__roomInfo')
+        const customerName = row.querySelector(
+          'td.ReservationSearchListItem__visitor > span:nth-child(1)'
+        )?.innerText.trim();
+        const roomInfo = row.querySelector('td.ReservationSearchListItem__roomInfo')
           ?.innerText.trim();
 
-        const checkInRaw = row
-          .querySelector('td.ReservationSearchListItem__date')
-          ?.innerText.trim();
-        const checkIn = checkInRaw ? checkInRaw.split('\n')[0].trim() : null;
+        // 날짜 셀
+        const dateTd = row.querySelector('td.ReservationSearchListItem__date');
+        let checkIn = '';
+        let checkOut = '';
+        if (dateTd) {
+          const lines = dateTd.innerText.split('\n').map((s) => s.trim());
+          checkIn = lines[0] || '';
+          checkOut = lines[1] || '';
+        }
 
-        const checkOut = row
-          .querySelector(
-            'td.ReservationSearchListItem__date > span:nth-child(2)'
-          )
-          ?.innerText.trim();
-        const reservationDate = row
-          .querySelector('td.ReservationSearchListItem__reservation')
-          ?.innerText.trim();
-        const price = row
-          .querySelector('td.ReservationSearchListItem__price')
-          ?.innerText.trim();
+        const reservationDate = row.querySelector('td.ReservationSearchListItem__reservation')
+          ?.innerText.trim() || '';
+        const price = row.querySelector('td.ReservationSearchListItem__price')
+          ?.innerText.trim() || '';
+
+        // reservationNo가 없으면 무효 행으로 간주(필요시)
+        if (!reservationNo) return null;
 
         return {
           reservationNo,
@@ -248,10 +174,7 @@ export async function extractReservations(page) {
 }
 
 /**
- * 숙소 전환 함수 (야놀자 내에서 숙소 리스트 전환)
- * @param {Page} page
- * @param {String} desiredAccommodationName
- * @returns {Boolean} - 전환 성공 여부
+ * 숙소 전환 함수
  */
 export async function switchAccommodation(page, desiredAccommodationName) {
   try {
@@ -303,25 +226,23 @@ export async function switchAccommodation(page, desiredAccommodationName) {
 }
 
 /**
- * YanoljaMotel 스크래퍼 함수 (기본)
- * @param {String} hotelId   - 호텔 ID
- * @param {String} siteName  - 예: 'YanoljaMotel'
+ * 변경된 로직: 첫 번째 스크랩 결과는 서버 전송 X, 
+ * 두 번째 스크랩(숙소전환 후) 결과만 서버 전송
  */
 export default async function scrapeYanoljaMotel(hotelId, siteName) {
   let browser;
   let page;
   try {
-    // (1) 브라우저 연결
+    // 1) 브라우저 연결
     browser = await connectToChrome();
     logger.info('[Yanolja] 브라우저 연결됨.');
 
-    // (2) 새 페이지 열기
+    // 2) 새 페이지 열기
     page = await browser.newPage();
     logger.info('[Yanolja] 새 페이지 생성 완료.');
-
     await page.setViewport({ width: 2080, height: 1680 });
 
-    // (2-1) DB에서 쿠키 로드해서 적용
+    // 2-1) DB 쿠키 로드
     const hotelSettings = await HotelSettingsModel.findOne({ hotelId });
     const storedCookies = hotelSettings?.otaCredentials?.yanolja?.cookies || [];
     if (storedCookies.length > 0) {
@@ -332,7 +253,7 @@ export default async function scrapeYanoljaMotel(hotelId, siteName) {
       logger.info('[Yanolja] 쿠키 없음(최초 로그인 필요 가능).');
     }
 
-    // (3) 메인 페이지(https://partner.yanolja.com)로 이동 -> 로그인 여부 체크
+    // 3) 메인 페이지 → 로그인 여부
     await page.goto('https://partner.yanolja.com/', {
       waitUntil: 'networkidle0',
       timeout: 60000,
@@ -341,7 +262,7 @@ export default async function scrapeYanoljaMotel(hotelId, siteName) {
 
     let loggedIn = await checkAlreadyLoggedIn(page);
     if (!loggedIn) {
-      // 로그인 필요 => DB에 아이디/비번이 있어야 한다.
+      // 로그인 필요
       if (
         !hotelSettings?.otaCredentials?.yanolja?.loginId ||
         !hotelSettings?.otaCredentials?.yanolja?.loginPw
@@ -350,13 +271,11 @@ export default async function scrapeYanoljaMotel(hotelId, siteName) {
       }
       const { loginId, loginPw } = hotelSettings.otaCredentials.yanolja;
 
-      logger.info(
-        '[Yanolja] 쿠키가 만료되었거나 로그아웃 상태. 로그인 시도...'
-      );
+      logger.info('[Yanolja] 쿠키 만료 or 로그아웃 상태 → 로그인 시도');
       await loginYanolja(page, hotelId, loginId, loginPw);
       logger.info('[Yanolja] 로그인 완료.');
     } else {
-      logger.info('[Yanolja] 이미 로그인된 상태로 간주.');
+      logger.info('[Yanolja] 이미 로그인된 상태');
     }
 
     // 날짜 범위
@@ -369,90 +288,78 @@ export default async function scrapeYanoljaMotel(hotelId, siteName) {
       waitUntil: 'networkidle0',
       timeout: 60000,
     });
-    logger.info(`예약 페이지 이동 완료: ${siteName} (hotelId: ${hotelId})`);
+    logger.info(`(1) 예약 페이지 이동 완료: ${siteName} (hotelId: ${hotelId})`);
 
-    // 5) 원하는 URL로 다시 이동(날짜 범위)
-    const url = `https://partner.yanolja.com/reservation/search?dateType=CHECK_IN_DATE&startDate=${startDate}&endDate=${endDate}&reservationStatus=ALL&keywordType=VISITOR_NAME&page=1&size=50&sort=checkInDate,desc&propertyCategory=MOTEL&checkedIn=STAY_STATUS_ALL&selectedDate=${today.format(
+    // 5) 첫 번째 스크랩(모텔)용 URL
+    const motelUrl = `https://partner.yanolja.com/reservation/search?dateType=CHECK_IN_DATE&startDate=${startDate}&endDate=${endDate}&reservationStatus=ALL&keywordType=VISITOR_NAME&page=1&size=50&sort=checkInDate,desc&propertyCategory=MOTEL&checkedIn=STAY_STATUS_ALL&selectedDate=${today.format(
       'YYYY-MM-DD'
     )}&searchType=detail&useTypeDetail=ALL&useTypeCheckIn=ALL`;
-    await page.goto(url, { waitUntil: 'networkidle0', timeout: 60000 });
-    logger.info(`예약 검색 URL 이동 완료 (날짜범위 ${startDate} ~ ${endDate})`);
+    await page.goto(motelUrl, { waitUntil: 'networkidle0', timeout: 60000 });
+    logger.info(`(1) 예약 검색 URL 이동 완료 (모텔): ${startDate} ~ ${endDate}`);
 
-    // 6) 예약 목록 추출
-    const reservations = await extractReservations(page);
-    // logger.info(`추출된 예약 데이터: ${JSON.stringify(reservations, null, 2)}`);
-
-    if (!reservations || reservations.length === 0) {
-      logger.info(`${siteName}(${hotelId})에 예약 없음. 서버에 전송안함.`);
+    // 6) 첫 번째 스크랩 - "서버 전송은 하지 않는다!"
+    const firstReservations = await extractReservations(page);
+    if (firstReservations && firstReservations.length > 0) {
+      logger.info(
+        `[Yanolja] 첫 번째 스크랩 (모텔) 결과: ${firstReservations.length}건. (서버 전송은 생략)`
+      );
     } else {
-      await sendReservations(hotelId, siteName, reservations);
-      logger.info(`${siteName} 예약 정보 저장 성공 (hotelId=${hotelId}).`);
+      logger.info('[Yanolja] 첫 번째 스크랩(모텔) 결과: 없음.');
     }
 
-    // 7) 메인페이지로 이동 후 숙소전환 시도
-    logger.info('첫 번째 스크래핑 완료 후 메인페이지 이동...');
+    // 7) 메인페이지 → 숙소전환
+    logger.info('[Yanolja] 첫 번째 스크래핑 후, 메인페이지로 이동...');
     await page.goto('https://partner.yanolja.com/', {
       waitUntil: 'networkidle0',
       timeout: 60000,
     });
-    logger.info('메인페이지 이동 완료.');
+    logger.info('[Yanolja] 메인페이지 이동 완료.');
 
-    // 원하는 숙소 (예: '숙소전환(모텔<-->호텔)')
     const desiredAccommodationName = '숙소전환(모텔<-->호텔)';
-    const switchSuccess = await switchAccommodation(
-      page,
-      desiredAccommodationName
-    );
-    if (switchSuccess) {
-      logger.info('숙소 전환에 성공했습니다. (두 번째 스크래핑 시도)');
+    const switchSuccess = await switchAccommodation(page, desiredAccommodationName);
+    if (!switchSuccess) {
+      logger.warn('[Yanolja] 숙소 전환 실패 (수동 전환 필요) → 종료');
+      return;
+    }
 
-      // 두 번째 검색 페이지
-      await page.goto('https://partner.yanolja.com/reservation/search', {
-        waitUntil: 'networkidle0',
-        timeout: 60000,
-      });
-      logger.info('두 번째 예약 검색 페이지 이동 완료.');
+    logger.info('[Yanolja] 숙소 전환 성공 → 두 번째 스크래핑 시도');
 
-      // 다시 날짜범위 URL로 이동
-      await page.goto(url, { waitUntil: 'networkidle0', timeout: 60000 });
-      logger.info(`두 번째 예약 검색 URL 이동 완료 (${startDate}~${endDate})`);
+    // 8) 다시 예약 페이지
+    await page.goto('https://partner.yanolja.com/reservation/search', {
+      waitUntil: 'networkidle0',
+      timeout: 60000,
+    });
+    logger.info('(2) 두 번째 예약 검색 페이지 이동 완료 (호텔?)');
 
-      const newReservations = await extractReservations(page);
-      // logger.info(
-      //   `숙소 전환 후 새 예약 데이터: ${JSON.stringify(
-      //     newReservations,
-      //     null,
-      //     2
-      //   )}`
-      // );
+    // 8-1) 필요하다면 호텔 전용 URL로 갈 수 있음.
+    // 여기서는 motelUrl 그대로 써도 같은 결과가 나올 수 있지만,
+    // 실제로 호텔 전용 파라미터( useTypeCheckIn=STAY, propertyCategory=HOTEL 등)를 사용 가능.
+    const hotelUrl = motelUrl.replace('propertyCategory=MOTEL', 'propertyCategory=HOTEL');
+    // 예: useTypeCheckIn=STAY & useTypeDetail=STAY 등으로 바꿀 수도 있음
 
-      if (newReservations && newReservations.length > 0) {
-        await sendReservations(hotelId, siteName, newReservations);
-        logger.info(
-          `숙소 전환 후 예약도 성공적으로 저장 (hotelId=${hotelId}).`
-        );
-      } else {
-        logger.info(`${siteName}(${hotelId}) 숙소전환 후 예약 없음.`);
-      }
+    await page.goto(hotelUrl, { waitUntil: 'networkidle0', timeout: 60000 });
+    logger.info(`(2) 예약 검색 URL 이동 완료 (호텔): ${startDate} ~ ${endDate}`);
+
+    // 9) 두 번째 스크랩 결과를 서버 전송
+    const secondReservations = await extractReservations(page);
+    if (secondReservations && secondReservations.length > 0) {
+      await sendReservations(hotelId, siteName, secondReservations);
+      logger.info(`[Yanolja] 두 번째 스크랩(숙소전환 후) 예약 ${secondReservations.length}건 전송완료`);
     } else {
-      logger.warn('숙소 전환 실패 (수동 전환 필요)');
+      logger.info('[Yanolja] 두 번째 스크랩(숙소전환 후) 예약 없음.');
     }
   } catch (error) {
-    logger.error(
-      `스크래핑 실패: ${siteName}(hotelId=${hotelId}) - ${error.message}`
-    );
-    throw error; // 큐 재시도 로직 등에서 감지하기 위함
+    logger.error(`스크래핑 실패: ${siteName}(hotelId=${hotelId}) - ${error.message}`);
+    throw error;
   } finally {
-    // 8) 자원 정리
+    // 10) 자원 정리
     if (page) {
-      // page.close() 시도 (원하면 주석 해제)
       await page.close();
-      logger.info(`페이지를 닫았습니다: ${siteName} (hotelId=${hotelId}).`);
+      logger.info(`[Yanolja] 페이지 닫음: ${siteName} (hotelId=${hotelId}).`);
     }
     if (browser) {
-      // await browser.disconnect(); // 브라우저 연결 해제 브라우저는 메모리에 살아있음, 결국 메모리 점유율이 올라감.
-      await browser.close(); // 브라우저 종료
-      logger.info(`브라우저 연결 해제: ${siteName} (hotelId=${hotelId}).`);
+      await browser.close();
+      logger.info(`[Yanolja] 브라우저 종료: ${siteName} (hotelId=${hotelId}).`);
     }
   }
 }

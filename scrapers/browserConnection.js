@@ -41,12 +41,12 @@ const connectToChrome = async () => {
       logger.warn(
         `[connectToChrome] '${chromePath}' not found; use bundled Chromium`
       );
-      useExecutablePath = undefined; // Puppeteer 내장 Chromium
+      useExecutablePath = undefined;
     }
 
-    // 6) Puppeteer.launch() (헤드리스 OFF)
+    // 6) Puppeteer.launch()
     const browser = await puppeteer.launch({
-      headless: false, // 테스트 시 실제 창이 보이도록
+      headless: true,
       executablePath: useExecutablePath,
       args: [
         '--no-sandbox',
