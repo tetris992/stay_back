@@ -36,9 +36,13 @@ app.use(hpp()); // HTTP 파라미터 폴터링
 // CORS_ORIGIN 환경변수가 비어있는 경우를 대비해 처리
 let allowedOrigins = [
   'https://tetris992.github.io',
+  'https://pms.coolstay.co.kr',
+  'https://admin.booking.com',
   'https://ad.goodchoice.kr',
   'https://partner.goodchoice.kr',
   'https://partner.yanolja.com',
+  'https://expediapartnercentral.com/',
+  'https://apps.expediapartnercentral.com',
   'https://ycs.agoda.com',
   'http://localhost:3000', //개발용 react 서버 주소 배포후 실제 프런트엔드 도메인주소를 넣어야 함?
   'https://container-service-1.302qcbg9eaynw.ap-northeast-2.cs.amazonlightsail.com',
