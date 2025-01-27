@@ -50,6 +50,15 @@ const UserSchema = new mongoose.Schema(
         '전화번호는 올바른 형식이어야 합니다 (예: 010-2224-4444).',
       ],
     },
+    // ==== 개인정보 동의 관련 필드 추가 ====
+    consentChecked: {
+      type: Boolean,
+      default: false,
+    },
+    consentAt: {
+      type: Date,
+      default: null,
+    },
   },
   { timestamps: true }
 );

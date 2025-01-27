@@ -6,14 +6,28 @@ import {
   refreshAccessToken,
   logout,
   registerUser,
-  getUserInfo, // 추가됨
-  updateUser, // 추가됨
+  getUserInfo,
+  updateUser,
+  postConsent, // 개인정보 동의 컨트롤러 추가
+  getConsentStatus, // 개인정보 동의 상태 조회 컨트롤러 추가
+  requestPasswordReset, // 비밀번호 재설정 요청 컨트롤러
+  resetPasswordController, // 비밀번호 재설정 컨트롤러
 } from '../controllers/authController.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import logger from '../utils/logger.js'; // logger 추가
-import { protect } from '../middleware/authMiddleware.js'; 
+import { protect } from '../middleware/authMiddleware.js';
+import { getAuthStatus } from '../controllers/authController.js';
 
 const router = express.Router();
+
+// POST /auth/consent
+router.post('/consent', protect, asyncHandler(postConsent));
+
+// GET /auth/consent
+router.get('/consent', protect, asyncHandler(getConsentStatus));
+
+// 인증 상태 확인 라우트
+router.get('/status', protect, asyncHandler(getAuthStatus));
 
 // 로그인 라우트
 router.post(

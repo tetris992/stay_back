@@ -4,11 +4,18 @@ import jwt from 'jsonwebtoken';
 import User from '../models/User.js';
 import HotelSettings from '../models/HotelSettings.js';
 import RefreshToken from '../models/RefreshToken.js';
+import PasswordResetToken from '../models/PasswordResetToken.js';
 import logger from '../utils/logger.js';
 import scraperManager from '../scrapers/scraperManager.js';
-import PasswordResetToken from '../models/PasswordResetToken.js';
 import crypto from 'crypto';
 import sendEmail from '../utils/sendEmail.js';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 // Access Token 생성 함수
 const generateAccessToken = (user) => {
@@ -54,7 +61,7 @@ export const loginUser = async (req, res) => {
       res.cookie('refreshToken', refreshTokenDoc.token, {
         httpOnly: true,
         secure: process.env.NODE_ENV === 'production',
-        sameSite: 'strict',// 
+        sameSite: 'strict', //
         maxAge: 365 * 24 * 60 * 60 * 1000, // 1년
       });
 
@@ -263,10 +270,13 @@ export const getUserInfo = async (req, res) => {
     res.status(200).json({
       message: '사용자 정보가 성공적으로 조회되었습니다.',
       data: {
+        _id: user._id, // _id 필드 추가
         hotelId: user.hotelId,
         email: user.email,
         address: user.address,
         phoneNumber: user.phoneNumber,
+        consentChecked: user.consentChecked, // 동의 상태 추가
+        consentAt: user.consentAt, // 동의 시각 추가
         createdAt: user.createdAt,
         updatedAt: user.updatedAt,
       },
@@ -309,11 +319,87 @@ export const updateUser = async (req, res) => {
         email: user.email,
         address: user.address,
         phoneNumber: user.phoneNumber,
+        consentChecked: user.consentChecked, // 동의 상태 추가
+        consentAt: user.consentAt, // 동의 시각 추가
         updatedAt: user.updatedAt,
       },
     });
   } catch (error) {
     logger.error('Error updating user:', error);
+    res.status(500).json({ message: '서버 오류가 발생했습니다.' });
+  }
+};
+
+// POST /auth/consent
+/**
+ * 사용자가 개인정보에 동의하면 해당 정보를 저장
+ */
+export const postConsent = async (req, res) => {
+  const userId = req.user.id; // protect 미들웨어를 통해 설정
+  const hotelId = req.user.hotelId; // protect 미들웨어를 통해 설정
+
+  logger.info(`postConsent called for hotelId: ${hotelId}, userId: ${userId}`);
+
+  try {
+    // 사용자 찾기
+    const user = await User.findOne({ _id: userId, hotelId });
+
+    if (!user) {
+      logger.warn(`User not found with userId: ${userId}, hotelId: ${hotelId}`);
+      return res.status(404).json({ message: '사용자를 찾을 수 없습니다.' });
+    }
+
+    // 개인정보 동의 상태 업데이트
+    user.consentChecked = true;
+    user.consentAt = new Date();
+    await user.save();
+
+    // 추가: 텍스트 파일로 기록
+    const consentLog = `User ID: ${userId}, Hotel ID: ${hotelId}, Consent At: ${user.consentAt.toISOString()}\n`;
+    const logPath = path.join(__dirname, '../logs/consentLogs.txt');
+
+    // logs 폴더가 없으면 생성
+    const logsDir = path.dirname(logPath);
+    if (!fs.existsSync(logsDir)) {
+      fs.mkdirSync(logsDir, { recursive: true }); // 수정된 부분: logPath -> logsDir
+      logger.info('Logs directory created.');
+    }
+
+    fs.appendFileSync(logPath, consentLog, 'utf8');
+    logger.info(`Consent recorded for userId: ${userId}, hotelId: ${hotelId}`);
+
+    res.status(200).json({ message: '개인정보 동의가 완료되었습니다.' });
+  } catch (error) {
+    logger.error('개인정보 동의 저장 중 오류 발생:', error);
+    res.status(500).json({ message: '서버 오류가 발생했습니다.' });
+  }
+};
+
+// GET /auth/consent
+/**
+ * 사용자의 개인정보 동의 상태를 조회
+ */
+export const getConsentStatus = async (req, res) => {
+  const { hotelId } = req.query;
+  const userId = req.user.id;
+
+  if (!hotelId) {
+    return res.status(400).json({ message: 'hotelId가 필요합니다.' });
+  }
+
+  try {
+    const user = await User.findOne({ _id: userId, hotelId });
+
+    if (!user) {
+      return res.status(404).json({ message: '사용자를 찾을 수 없습니다.' });
+    }
+
+    res.status(200).json({
+      consentChecked: user.consentChecked,
+      consentAt: user.consentAt,
+    });
+  } catch (error) {
+    logger.error('개인정보 동의 상태 조회 중 오류 발생:', error);
     res.status(500).json({ message: '서버 오류가 발생했습니다.' });
   }
 };
@@ -385,4 +471,21 @@ export const resetPasswordController = async (req, res) => {
   await resetTokenDoc.deleteOne();
 
   return res.json({ message: '비밀번호가 성공적으로 재설정되었습니다.' });
+};
+
+// GET /auth/status
+export const getAuthStatus = async (req, res) => {
+  // protect 미들웨어가 통과되었으면 req.user가 존재
+  if (req.user) {
+    return res.status(200).json({
+      authenticated: true,
+      hotelId: req.user.hotelId,
+      message: '로그인 상태입니다.',
+    });
+  } else {
+    return res.status(401).json({
+      authenticated: false,
+      message: '로그인되어 있지 않습니다.',
+    });
+  }
 };
