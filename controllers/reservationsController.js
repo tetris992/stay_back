@@ -9,6 +9,10 @@ import { parseDate } from '../utils/dateParser.js';
 import { isCancelledStatus } from '../utils/isCancelledStatus.js';
 import { format } from 'date-fns';
 
+// [추가된 부분: 호텔 설정 모델과 알림톡 전송 모듈 추가]
+import HotelSettingsModel from '../models/HotelSettings.js';
+import { sendReservationConfirmation } from '../utils/sendAlimtalk.js';
+
 // 전화번호에서 숫자만 추출하는 헬퍼 함수
 function sanitizePhoneNumber(phoneNumber) {
   if (!phoneNumber) return '';
@@ -240,6 +244,35 @@ export const createOrUpdateReservations = async (req, res) => {
 
           // [추가된 부분: 새로 생성된 예약의 _id를 createdReservationIds에 푸시]
           createdReservationIds.push(reservationId);
+
+          //**************************/ [현장예약인 경우 알림톡 전송 실행]***************************
+          if (siteName === '현장예약') {
+            try {
+              // 호텔 설정 정보를 조회 (호텔명, 호텔ID, 전화번호 등)
+              const hotelSettings = await HotelSettingsModel.findOne({
+                hotelId: finalHotelId,
+              });
+              if (hotelSettings) {
+                // 예약 정보를 객체로 변환하여 알림톡 전송 함수 호출
+                sendReservationConfirmation(
+                  newReservation.toObject(),
+                  hotelSettings.toObject()
+                ).catch((err) => {
+                  logger.error(
+                    `알림톡 전송 실패 (예약ID: ${reservationId}): ${err.message}`
+                  );
+                });
+              } else {
+                logger.warn(
+                  `호텔 설정 정보를 찾을 수 없습니다 (hotelId: ${finalHotelId})`
+                );
+              }
+            } catch (err) {
+              logger.error(
+                `알림톡 전송 처리 중 오류 (예약ID: ${reservationId}): ${err.message}`
+              );
+            }
+          }
         }
       }
     }

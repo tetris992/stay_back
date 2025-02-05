@@ -16,17 +16,11 @@ const UserSchema = new mongoose.Schema(
       type: String,
       required: true,
       minlength: [8, '비밀번호는 최소 8자 이상이어야 합니다.'],
-      // maxlength: [50, '비밀번호는 최대 50자 이하이어야 합니다.'], //서버에 저장된 해시비번은 항상 60자가 넘어서 오류
-      // validate: {
-      //   validator: function (value) {
-      //     return /^(?=.*[A-Z])(?=.*[a-z])(?=.*[0-9])(?=.*[!@#$%^&*]).{8,50}$/.test(
-      //       value
-      //     );
-      //   },
-      //   message:
-      //     //보안형식은 몽고에서 소급적용되지 않음.
-      //     '비밀번호는 대문자, 소문자, 숫자, 특수문자를 각각 1개 이상 포함해야 합니다.',
-      // },
+    },
+    hotelName: {
+      type: String,
+      required: false,
+      trim: true,
     },
     email: {
       type: String,

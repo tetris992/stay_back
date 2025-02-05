@@ -31,6 +31,7 @@ export const getHotelSettings = async (req, res) => {
       const defaultSettings = {
         user: req.user._id, // 사용자 ID 포함
         hotelId,
+        hotelName: req.user.hotelName || '',
         totalRooms: 50, // 기본값
         roomTypes: defaultRoomTypes, // 기본 룸 타입 로드
         otas: availableOTAs.map((ota) => ({ name: ota, isActive: false })),
@@ -58,15 +59,30 @@ export const getHotelSettings = async (req, res) => {
 };
 
 // 호텔 등록
-
 export const registerHotel = async (req, res) => {
-  const { hotelId, totalRooms, roomTypes, email, address, phoneNumber, otas } =
-    req.body;
+  const {
+    hotelId,
+    hotelName,
+    totalRooms,
+    roomTypes,
+    email,
+    address,
+    phoneNumber,
+    otas,
+  } = req.body;
 
-  // 필수 입력값 검증
-  if (!hotelId || !totalRooms || !email || !address || !phoneNumber) {
+  // 필수 입력값 검증 (호텔 이름 포함)
+  if (
+    !hotelId ||
+    !totalRooms ||
+    !email ||
+    !address ||
+    !phoneNumber ||
+    !hotelName
+  ) {
     return res.status(400).send({
-      message: '호텔 ID, 총 객실 수, 이메일, 주소, 전화번호는 필수입니다.',
+      message:
+        '호텔 ID, 호텔 이름, 총 객실 수, 이메일, 주소, 전화번호는 필수입니다.',
     });
   }
 
@@ -89,9 +105,10 @@ export const registerHotel = async (req, res) => {
         ? otas
         : availableOTAs.map((ota) => ({ name: ota, isActive: false }));
 
-    // 새로운 호텔 등록
+    // 새로운 호텔 등록 (hotelName 추가)
     const newHotel = new HotelSettingsModel({
       hotelId,
+      hotelName, // 추가된 부분
       totalRooms,
       roomTypes: finalRoomTypes,
       otas: finalOTAs,
@@ -108,7 +125,6 @@ export const registerHotel = async (req, res) => {
       .send({ message: '호텔이 성공적으로 등록되었습니다.', data: newHotel });
   } catch (error) {
     logger.error('호텔 등록 중 오류 발생:', error);
-    // Mongoose 유효성 검사 에러 처리
     if (error.name === 'ValidationError') {
       return res.status(400).send({ message: error.message });
     }
@@ -121,6 +137,7 @@ export const registerHotel = async (req, res) => {
 export const updateHotelSettings = async (req, res) => {
   const { hotelId } = req.params;
   const {
+    hotelName,
     totalRooms,
     roomTypes,
     address,
@@ -181,6 +198,7 @@ export const updateHotelSettings = async (req, res) => {
 
   try {
     const updateData = {};
+    if (hotelName !== undefined) updateData.hotelName = hotelName;
     if (totalRooms !== undefined) updateData.totalRooms = totalRooms;
     if (roomTypes !== undefined) updateData.roomTypes = roomTypes;
     if (address !== undefined) updateData.address = address;

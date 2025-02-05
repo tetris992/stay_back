@@ -87,6 +87,10 @@ const HotelSettingsSchema = new mongoose.Schema(
       required: true,
       unique: true,
     },
+    hotelName: {
+      type: String,
+      required: false,
+    },
     totalRooms: {
       type: Number,
       required: true,
