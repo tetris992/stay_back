@@ -46,7 +46,7 @@ const connectToChrome = async () => {
 
     // 6) Puppeteer.launch()
     const browser = await puppeteer.launch({
-      headless: true,
+      headless: false,
       executablePath: useExecutablePath,
       args: [
         '--no-sandbox',

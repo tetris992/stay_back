@@ -60,8 +60,8 @@ export const loginUser = async (req, res) => {
       // 리프레시 토큰을 HTTP-only 쿠키로 설정 (보안 강화)
       res.cookie('refreshToken', refreshTokenDoc.token, {
         httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'strict', //
+        secure: process.env.NODE_ENV === 'production', // HTTPS 환경에서는 true
+        sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax', // 개발 환경에서는 'lax'
         maxAge: 365 * 24 * 60 * 60 * 1000, // 1년
       });
 
@@ -159,7 +159,7 @@ export const logout = async (req, res) => {
           res.clearCookie('refreshToken', {
             httpOnly: true,
             secure: process.env.NODE_ENV === 'production',
-            sameSite: 'strict',
+            sameSite: 'none',
           });
 
           res.status(200).json({ message: '로그아웃 되었습니다.' });
@@ -178,7 +178,7 @@ export const logout = async (req, res) => {
         res.clearCookie('refreshToken', {
           httpOnly: true,
           secure: process.env.NODE_ENV === 'production',
-          sameSite: 'strict',
+          sameSite: 'none',
         });
 
         res.status(200).json({ message: '로그아웃 되었습니다.' });
@@ -194,33 +194,44 @@ export const logout = async (req, res) => {
 
 // 사용자 등록 함수 수정
 export const registerUser = async (req, res) => {
-  const { hotelId, password, email, address, phoneNumber } = req.body;
+  // 수정된 부분: hotelName도 필수 항목으로 받음
+  const { hotelId, hotelName, password, email, address, phoneNumber } =
+    req.body;
 
-  // 필수 입력값 검증
-  if (!hotelId || !password || !email || !address || !phoneNumber) {
+  if (
+    !hotelId ||
+    !hotelName ||
+    !password ||
+    !email ||
+    !address ||
+    !phoneNumber
+  ) {
     return res
       .status(400)
-      .send({ message: '모든 필수 입력값을 입력해주세요.' });
+      .send({
+        message:
+          '모든 필수 입력값(호텔 ID, 호텔 이름, 비밀번호, 이메일, 주소, 전화번호)을 입력해주세요.',
+      });
   }
 
   try {
-    // 중복된 hotelId, email, phoneNumber 체크
     const existingUser = await User.findOne({
       $or: [{ hotelId }, { email }, { phoneNumber }],
     });
 
     if (existingUser) {
       let message = '이미 존재하는 사용자입니다.';
-      if (existingUser.hotelId === hotelId) message += '호텔 ID';
-      else if (existingUser.email === email) message += '이메일';
-      else if (existingUser.phoneNumber === phoneNumber) message += '전화번호';
+      if (existingUser.hotelId === hotelId) message += ' 호텔 ID';
+      else if (existingUser.email === email) message += ' 이메일';
+      else if (existingUser.phoneNumber === phoneNumber) message += ' 전화번호';
       message += '입니다.';
       return res.status(409).send({ message });
     }
 
-    // 사용자 계정 생성
+    // 수정된 부분: hotelName 필드를 포함하여 새로운 사용자 생성
     const newUser = new User({
       hotelId,
+      hotelName,
       password,
       email,
       address,
@@ -229,7 +240,7 @@ export const registerUser = async (req, res) => {
     await newUser.save();
     logger.info('New user account created:', hotelId);
 
-    // ScraperManager를 사용하여 스크래핑 시작
+    // 스크래핑 시작
     await scraperManager.startScraping(newUser.hotelId);
     logger.info(
       `Scraping started for hotelId: ${newUser.hotelId} upon registration.`
@@ -239,6 +250,7 @@ export const registerUser = async (req, res) => {
       message: 'User account registered successfully',
       data: {
         hotelId: newUser.hotelId,
+        hotelName: newUser.hotelName, // 수정된 부분: 반환 데이터에 호텔 이름 포함
         email: newUser.email,
         address: newUser.address,
         phoneNumber: newUser.phoneNumber,
@@ -255,14 +267,12 @@ export const registerUser = async (req, res) => {
 // 사용자 정보 가져오기 함수 추가
 export const getUserInfo = async (req, res) => {
   const { hotelId } = req.params;
-
   try {
     if (req.user.hotelId !== hotelId) {
       return res.status(403).json({ message: '권한이 없습니다.' });
     }
 
     const user = await User.findOne({ hotelId }).select('-password');
-
     if (!user) {
       return res.status(404).json({ message: '사용자를 찾을 수 없습니다.' });
     }
@@ -270,13 +280,14 @@ export const getUserInfo = async (req, res) => {
     res.status(200).json({
       message: '사용자 정보가 성공적으로 조회되었습니다.',
       data: {
-        _id: user._id, // _id 필드 추가
+        _id: user._id,
         hotelId: user.hotelId,
+        hotelName: user.hotelName, // 수정된 부분: 호텔 이름 포함
         email: user.email,
         address: user.address,
         phoneNumber: user.phoneNumber,
-        consentChecked: user.consentChecked, // 동의 상태 추가
-        consentAt: user.consentAt, // 동의 시각 추가
+        consentChecked: user.consentChecked,
+        consentAt: user.consentAt,
         createdAt: user.createdAt,
         updatedAt: user.updatedAt,
       },
@@ -287,10 +298,11 @@ export const getUserInfo = async (req, res) => {
   }
 };
 
+
 // 사용자 정보 업데이트 함수 추가
 export const updateUser = async (req, res) => {
   const { hotelId } = req.params;
-  const { email, address, phoneNumber, password } = req.body;
+  const { email, address, phoneNumber, password, hotelName } = req.body; // 수정된 부분: hotelName 추가
 
   try {
     if (req.user.hotelId !== hotelId) {
@@ -298,16 +310,16 @@ export const updateUser = async (req, res) => {
     }
 
     const user = await User.findOne({ hotelId });
-
     if (!user) {
       return res.status(404).json({ message: '사용자를 찾을 수 없습니다.' });
     }
 
-    // 사용자 정보 업데이트
     if (email) user.email = email;
     if (address) user.address = address;
     if (phoneNumber) user.phoneNumber = phoneNumber;
     if (password) user.password = password;
+    // 수정된 부분: hotelName 업데이트
+    if (hotelName) user.hotelName = hotelName;
 
     await user.save();
     logger.info(`User ${hotelId} updated successfully.`);
@@ -316,11 +328,12 @@ export const updateUser = async (req, res) => {
       message: '사용자 정보가 성공적으로 업데이트되었습니다.',
       data: {
         hotelId: user.hotelId,
+        hotelName: user.hotelName, // 수정된 부분: 업데이트된 호텔 이름 포함
         email: user.email,
         address: user.address,
         phoneNumber: user.phoneNumber,
-        consentChecked: user.consentChecked, // 동의 상태 추가
-        consentAt: user.consentAt, // 동의 시각 추가
+        consentChecked: user.consentChecked,
+        consentAt: user.consentAt,
         updatedAt: user.updatedAt,
       },
     });
@@ -329,6 +342,7 @@ export const updateUser = async (req, res) => {
     res.status(500).json({ message: '서버 오류가 발생했습니다.' });
   }
 };
+
 
 // POST /auth/consent
 /**

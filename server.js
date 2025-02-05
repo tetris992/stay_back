@@ -3,28 +3,28 @@
 import express from 'express';
 import dotenv from 'dotenv';
 import cors from 'cors';
-import helmet from 'helmet'; // 보안 강화 미들웨어
+import helmet from 'helmet';
 import mongoSanitize from 'express-mongo-sanitize';
 import xss from 'xss-clean';
 import hpp from 'hpp';
-import rateLimit from 'express-rate-limit'; // 요청 속도 제한 미들웨어
-import cookieParser from 'cookie-parser'; // 쿠키 파서 미들웨어 추가
-import csurf from 'csurf'; // CSRF 방지 미들웨어
+import rateLimit from 'express-rate-limit';
+import cookieParser from 'cookie-parser';
+import csurf from 'csurf';
 import path from 'path';
 import fs from 'fs';
 import logger from './utils/logger.js';
 import connectDB from './config/db.js';
 import reservationsRoutes from './routes/reservations.js';
 import hotelSettingsRoutes from './routes/hotelSettings.js';
-import statusRoutes from './routes/status.js'; // 추가된 상태 관련 라우트
+import statusRoutes from './routes/status.js';
 import authRoutes from './routes/auth.js';
 import chromeRoutes from './routes/chrome.js';
-import scraperTasksRoutes from './routes/scraperTasks.js'; // ScraperTasks 라우트 추가
-import scraperManager from './scrapers/scraperManager.js'; // ScraperManager 임포트
+import scraperTasksRoutes from './routes/scraperTasks.js';
+import scraperManager from './scrapers/scraperManager.js';
 import ensureConsent from './middleware/consentMiddleware.js';
 
 // === [ADD] 인증 미들웨어 임포트 ===
-import { protect } from './middleware/authMiddleware.js'; // 수정된 부분
+import { protect } from './middleware/authMiddleware.js';
 
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
@@ -47,6 +47,7 @@ const __dirname = dirname(__filename);
 
 // CORS_ORIGIN 환경변수가 비어있는 경우를 대비해 처리
 let allowedOrigins = [
+  'http://staysync.me',
   'https://tetris992.github.io',
   'https://pms.coolstay.co.kr',
   'https://admin.booking.com',
@@ -56,19 +57,18 @@ let allowedOrigins = [
   'https://expediapartnercentral.com/',
   'https://apps.expediapartnercentral.com',
   'https://ycs.agoda.com',
-  'http://localhost:3000', // 개발용 react 서버 주소 배포 후 실제 프런트엔드 도메인주소를 넣어야 함
+  'http://localhost:3000',
   'https://container-service-1.302qcbg9eaynw.ap-northeast-2.cs.amazonlightsail.com',
-  'chrome-extension://bhfggeheelkddgmlegkppgpkmioldfkl',
+  'chrome-extension://cnoicicjafgmfcnjclhlehfpojfaelag',
 ];
 if (process.env.CORS_ORIGIN) {
-  // 쉼표로 구분된 여러 도메인을 환경변수에서 가져오기
   allowedOrigins = process.env.CORS_ORIGIN.split(',');
 }
 
 // CORS 설정
 app.use(
   cors({
-    origin: allowedOrigins, // 수정된 부분: allowedOrigins 사용
+    origin: allowedOrigins,
     methods: ['GET', 'POST', 'PATCH', 'DELETE'],
     credentials: true,
     allowedHeaders: [
@@ -80,10 +80,7 @@ app.use(
   })
 );
 
-// 쿠키 파서 미들웨어 추가
 app.use(cookieParser());
-
-// JSON 파싱 미들웨어
 app.use(express.json());
 
 // CSRF 방지 미들웨어 설정
@@ -91,7 +88,7 @@ const csrfProtection = csurf({
   cookie: {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production', // HTTPS 환경에서는 true로 설정
-    sameSite: 'none', // SameSite 설정
+    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax', // 개발 환경에서는 'lax'
   },
 });
 
@@ -105,14 +102,18 @@ const csrfExcludedRoutes = [
   /^\/auth\/login$/,
   /^\/auth\/register$/,
   /^\/auth\/refresh-token$/,
-  /^\/auth\/reset-password-request$/,
+  /^\/reservations$/, // 추가
+  /^\/hotel-settings$/, // 추가
+  /^\/auth\/refresh-token$/, // 클라이언트쪽에서 Refresh Token 요청 제외
   /^\/auth\/reset-password\/.+$/,
   /^\/csrf-token$/, // 이미 CSRF 보호된 라우트
 ];
 
 // 모든 라우트에 CSRF 보호 미들웨어 적용 (제외된 라우트는 제외)
 app.use((req, res, next) => {
-  const isExcluded = csrfExcludedRoutes.some((pattern) => pattern.test(req.path));
+  const isExcluded = csrfExcludedRoutes.some((pattern) =>
+    pattern.test(req.path)
+  );
   if (isExcluded) {
     return next();
   } else {
@@ -120,12 +121,18 @@ app.use((req, res, next) => {
   }
 });
 
-// 요청 속도 제한 설정
 app.use(
   rateLimit({
-    windowMs: 15 * 60 * 1000, // 15분
-    max: 1000, // IP당 최대 요청 수
+    windowMs: 15 * 60 * 1000,
+    max: 500,
     message: 'Too many requests from this IP, please try again later.',
+    standardHeaders: true, // RateLimit 관련 헤더 추가
+    legacyHeaders: false, // X-RateLimit-* 헤더 비활성화
+    handler: (req, res) => {
+      res.status(429).json({
+        message: 'You have exceeded the 500 requests in 15 minutes limit!',
+      });
+    },
   })
 );
 
@@ -156,7 +163,9 @@ app.use((err, req, res, next) => {
   logger.error(`Unhandled Error: ${err.message}`, err);
   const statusCode = err.statusCode || 500;
   let message =
-    process.env.NODE_ENV === 'development' ? err.message : 'Internal Server Error';
+    process.env.NODE_ENV === 'development'
+      ? err.message
+      : 'Internal Server Error';
 
   // CSRF 오류 처리
   if (err.code === 'EBADCSRFTOKEN') {
@@ -166,6 +175,7 @@ app.use((err, req, res, next) => {
 
   const response = {
     message,
+    stack: process.env.NODE_ENV === 'development' ? err.stack : undefined,
   };
 
   // CSRF 토큰이 있는 경우 추가
@@ -183,9 +193,6 @@ app.use((err, req, res, next) => {
 
 // 서버 시작 및 전역 설정
 const startServer = async () => {
-  // ScraperManager 초기화
-  // await initializeScraper();
-
   // 로그 디렉토리 확인 및 생성
   const logsDir = path.join(__dirname, 'logs');
   if (!fs.existsSync(logsDir)) {
@@ -202,7 +209,7 @@ const startServer = async () => {
   const gracefulShutdown = async () => {
     logger.info('Gracefully shutting down scraper queue and server...');
     try {
-      await scraperManager.gracefulShutdown(); // ScraperManager 작업 중지 및 브라우저 종료
+      await scraperManager.gracefulShutdown();
       logger.info('ScraperManager stopped successfully.');
     } catch (error) {
       logger.error('Error during ScraperManager shutdown:', error);
@@ -224,4 +231,4 @@ if (process.env.NODE_ENV !== 'test') {
   startServer();
 }
 
-export default app; // 테스트를 위해 app을 export
+export default app;
