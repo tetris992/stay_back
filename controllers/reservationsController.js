@@ -11,7 +11,7 @@ import { format } from 'date-fns';
 
 // [추가된 부분: 호텔 설정 모델과 알림톡 전송 모듈 추가]
 import HotelSettingsModel from '../models/HotelSettings.js';
-import { sendReservationConfirmation } from '../utils/sendAlimtalk.js';
+// import { sendReservationConfirmation } from '../utils/sendAlimtalk.js';
 
 // 전화번호에서 숫자만 추출하는 헬퍼 함수
 function sanitizePhoneNumber(phoneNumber) {
@@ -33,6 +33,86 @@ function parsePrice(priceString) {
   const match = str.match(/\d[\d,]*/);
   if (!match) return 0;
   return parseInt(match[0].replace(/,/g, ''), 10) || 0;
+}
+
+/**
+ * 호텔 설정의 객실 컨테이너 목록을 바탕으로, updateData(예약 정보)의
+ * checkIn, checkOut 날짜와 겹치지 않는 사용 가능한 객실번호(roomNumber)를
+ * 자동으로 할당하는 함수.
+ *
+ * @param {Object} updateData - 예약 업데이트 데이터 (checkIn, checkOut, roomInfo 등 포함)
+ * @param {String} finalHotelId - 호텔 ID
+ * @param {Object} Reservation - 해당 호텔의 Reservation 모델
+ * @returns {String} - 사용 가능한 객실번호 (없으면 빈 문자열)
+ */
+async function assignRoomNumber(updateData, finalHotelId, Reservation) {
+  // 이미 roomNumber가 있다면 그대로 사용
+  if (updateData.roomNumber && updateData.roomNumber.trim() !== '') {
+    return updateData.roomNumber;
+  }
+  // 호텔 설정에서 객실 레이아웃(컨테이너) 조회
+  const hotelSettings = await HotelSettingsModel.findOne({
+    hotelId: finalHotelId,
+  });
+  if (
+    !hotelSettings ||
+    !hotelSettings.gridSettings ||
+    !hotelSettings.gridSettings.containers
+  ) {
+    logger.warn('Hotel settings or gridSettings.containers not found.');
+    return '';
+  }
+  const containers = hotelSettings.gridSettings.containers;
+  // 해당 예약의 roomInfo(객실타입)와 일치하는 컨테이너 필터링 (대소문자 무시)
+  const matchedContainers = containers.filter(
+    (c) =>
+      c.roomInfo &&
+      c.roomInfo.toLowerCase() === updateData.roomInfo.toLowerCase()
+  );
+  if (!matchedContainers.length) {
+    logger.warn(`No container found for roomInfo: ${updateData.roomInfo}`);
+    return '';
+  }
+  // roomNumber 기준 오름차순 정렬 (숫자 변환 가능하면 숫자 비교)
+  matchedContainers.sort((a, b) => {
+    const aNum = parseInt(a.roomNumber, 10);
+    const bNum = parseInt(b.roomNumber, 10);
+    if (!isNaN(aNum) && !isNaN(bNum)) {
+      return aNum - bNum;
+    }
+    return a.roomNumber.localeCompare(b.roomNumber);
+  });
+  // 각 컨테이너에 대해 예약 날짜가 겹치는 기존 예약이 없는지 확인
+  for (const container of matchedContainers) {
+    const overlappingReservations = await Reservation.find({
+      roomInfo: updateData.roomInfo,
+      roomNumber: container.roomNumber,
+      isCancelled: false,
+      // 날짜 겹침 조건:
+      // 새로운 예약의 checkIn < 기존 예약의 checkOut &&
+      // 새로운 예약의 checkOut > 기존 예약의 checkIn
+      $or: [
+        {
+          checkIn: { $lt: updateData.checkOut },
+          checkOut: { $gt: updateData.checkIn },
+        },
+      ],
+    });
+    if (overlappingReservations.length === 0) {
+      return container.roomNumber;
+    }
+  }
+  // 만약 사용 가능한 객실번호가 없다면 재고 부족 로그 출력
+  logger.warn(
+    `재고 부족: ${updateData.roomInfo} 타입의 객실이 ${format(
+      updateData.checkIn,
+      "yyyy-MM-dd'T'HH:mm"
+    )} ~ ${format(
+      updateData.checkOut,
+      "yyyy-MM-dd'T'HH:mm"
+    )} 사이에 모두 예약되었습니다.`
+  );
+  return '';
 }
 
 // 모든 정상 예약 목록 가져오기
@@ -85,8 +165,6 @@ export const createOrUpdateReservations = async (req, res) => {
     await initializeHotelCollection(finalHotelId);
     const Reservation = getReservationModel(finalHotelId);
     const CanceledReservation = getCanceledReservationModel(finalHotelId);
-
-    // [추가된 부분: 새로 생성된 예약들의 _id를 담을 배열]
     const createdReservationIds = [];
 
     for (const reservation of reservations) {
@@ -103,40 +181,24 @@ export const createOrUpdateReservations = async (req, res) => {
       if (!/\d{2}:\d{2}/.test(checkOutDate)) {
         checkOutDate += ' 11:00';
       }
-
       const checkIn = parseDate(reservation.checkIn);
       const checkOut = parseDate(checkOutDate);
-
       if (!checkIn || !checkOut || checkIn >= checkOut) {
         logger.warn('Skipping reservation with invalid dates', reservation);
         continue;
       }
 
-      // --- [수정된 결제 방식 처리 로직 시작] ---
       let paymentMethod = '정보 없음';
-
       if (availableOTAs.includes(siteName)) {
-        // (1) 사이트가 OTA(아고다, 부킹, 익스피디아 등)일 때
-        if (
-          // reservation.paymentMethod가 있고 (예: "아고다에 요금 지불")
-          reservation.paymentMethod &&
-          reservation.paymentMethod.trim() !== ''
-        ) {
-          // => 그대로 저장 (문자열로 그대로)
-          paymentMethod = reservation.paymentMethod.trim();
-        } else {
-          // => 결제 방법 문구가 없는 경우 "OTA"로
-          paymentMethod = 'OTA';
-        }
+        paymentMethod =
+          reservation.paymentMethod && reservation.paymentMethod.trim() !== ''
+            ? reservation.paymentMethod.trim()
+            : 'OTA';
       } else if (siteName === '현장예약') {
-        // (2) 현장예약인 경우 기존 로직 그대로
         paymentMethod = reservation.paymentMethod || 'Pending';
       } else {
-        // (3) 그 외 (기타 사이트)
-        //   → 결제방법이 비어있으면 'Pending', 아니면 reservation.paymentMethod 그대로
         paymentMethod = reservation.paymentMethod || 'Pending';
       }
-      // --- [수정된 결제 방식 처리 로직 끝] ---
 
       const sanitizedPhoneNumber = sanitizePhoneNumber(
         reservation.phoneNumber || ''
@@ -162,121 +224,38 @@ export const createOrUpdateReservations = async (req, res) => {
         hotelId: finalHotelId,
       };
 
-      const cancelled = isCancelledStatus(
-        updateData.reservationStatus,
-        updateData.customerName,
-        updateData.roomInfo,
-        reservation.reservationNo
-      );
-      updateData.isCancelled = cancelled;
-
+      // 기존에 roomNumber가 있다면 그대로 사용, 없으면 자동 할당
       const existingReservation = await Reservation.findById(reservationId);
-      const existingCanceled = await CanceledReservation.findById(
-        reservationId
-      );
-
-      // 이미 취소 컬렉션에 있는 경우
-      if (existingCanceled) {
-        if (cancelled) {
-          // 이미 취소 컬렉션에 있고 계속 취소 상태면 업데이트
-          await CanceledReservation.updateOne(
-            { _id: reservationId },
-            updateData,
-            {
-              runValidators: true,
-              strict: true,
-              overwrite: true,
-            }
-          );
-          logger.info(`Updated canceled reservation: ${reservationId}`);
-        } else {
-          // 취소에서 정상 예약으로 복귀하는 경우 (드문 케이스)
-          await CanceledReservation.deleteOne({ _id: reservationId });
-          const newReservation = new Reservation({
-            _id: reservationId,
-            ...updateData,
-            isCancelled: false,
-          });
-          await newReservation.save();
-          logger.info(
-            `Moved canceled reservation back to normal: ${reservationId}`
-          );
-        }
-        continue;
-      }
-
-      // 기존 예약이 있는 경우
       if (existingReservation) {
-        if (cancelled) {
-          // 기존 예약에서 취소 상태로 변경
-          await Reservation.deleteOne({ _id: reservationId });
-          const newCanceled = new CanceledReservation({
-            _id: reservationId,
-            ...updateData,
-          });
-          await newCanceled.save();
-          logger.info(`Moved reservation to canceled: ${reservationId}`);
-        } else {
-          // 기존 예약 업데이트
-          await Reservation.updateOne({ _id: reservationId }, updateData, {
-            runValidators: true,
-            strict: true,
-            overwrite: true,
-          });
-          logger.info(`Updated reservation: ${reservationId}`);
+        if (!updateData.roomNumber || updateData.roomNumber.trim() === '') {
+          updateData.roomNumber = existingReservation.roomNumber || '';
         }
+        // manualAssignment 관련 코드는 제거합니다.
+        await Reservation.updateOne(
+          { _id: reservationId },
+          { $set: updateData },
+          { runValidators: true }
+        );
+        logger.info(`Updated reservation: ${reservationId}`);
       } else {
-        // 새로운 예약
-        if (cancelled) {
-          const newCanceled = new CanceledReservation({
-            _id: reservationId,
-            ...updateData,
-          });
-          await newCanceled.save();
-          logger.info(`Created new canceled reservation: ${reservationId}`);
+        if (!reservation.roomNumber || reservation.roomNumber.trim() === '') {
+          updateData.roomNumber = await assignRoomNumber(
+            updateData,
+            finalHotelId,
+            Reservation
+          );
         } else {
-          const newReservation = new Reservation({
-            _id: reservationId,
-            ...updateData,
-          });
-          await newReservation.save();
-          logger.info(`Created new reservation: ${reservationId}`);
-
-          // [추가된 부분: 새로 생성된 예약의 _id를 createdReservationIds에 푸시]
-          createdReservationIds.push(reservationId);
-
-          //**************************/ [현장예약인 경우 알림톡 전송 실행]***************************
-          if (siteName === '현장예약') {
-            try {
-              // 호텔 설정 정보를 조회 (호텔명, 호텔ID, 전화번호 등)
-              const hotelSettings = await HotelSettingsModel.findOne({
-                hotelId: finalHotelId,
-              });
-              if (hotelSettings) {
-                // 예약 정보를 객체로 변환하여 알림톡 전송 함수 호출
-                sendReservationConfirmation(
-                  newReservation.toObject(),
-                  hotelSettings.toObject()
-                ).catch((err) => {
-                  logger.error(
-                    `알림톡 전송 실패 (예약ID: ${reservationId}): ${err.message}`
-                  );
-                });
-              } else {
-                logger.warn(
-                  `호텔 설정 정보를 찾을 수 없습니다 (hotelId: ${finalHotelId})`
-                );
-              }
-            } catch (err) {
-              logger.error(
-                `알림톡 전송 처리 중 오류 (예약ID: ${reservationId}): ${err.message}`
-              );
-            }
-          }
+          updateData.roomNumber = reservation.roomNumber;
         }
+        const newReservation = new Reservation({
+          _id: reservationId,
+          ...updateData,
+        });
+        await newReservation.save();
+        logger.info(`Created new reservation: ${reservationId}`);
+        createdReservationIds.push(reservationId);
       }
     }
-    // [추가된 부분: 응답에 createdReservationIds 배열 포함]
     res.status(201).json({
       message: 'Reservations processed successfully',
       createdReservationIds,
@@ -369,6 +348,11 @@ export const updateReservation = async (req, res) => {
   const { reservationId } = req.params;
   const { hotelId, ...updateData } = req.body;
 
+  // 요청 데이터 전체 로그
+  console.log('[updateReservation] req.body:', req.body);
+  // 분리된 업데이트 데이터 로그
+  console.log('[updateReservation] updateData:', updateData);
+
   if (!hotelId) {
     return res.status(400).send({ message: 'hotelId는 필수입니다.' });
   }
@@ -381,16 +365,13 @@ export const updateReservation = async (req, res) => {
     });
 
     if (reservation) {
+      // 예) 전화번호, 가격, 날짜 변환 로직 처리
       if (updateData.phoneNumber) {
         updateData.phoneNumber = sanitizePhoneNumber(updateData.phoneNumber);
       }
-
-      // price 필드 숫자 변환
       if (updateData.price) {
         updateData.price = parsePrice(updateData.price);
       }
-
-      // 날짜 필드도 parseDate 사용하여 업데이트
       if (updateData.checkIn) {
         updateData.checkIn = parseDate(updateData.checkIn);
       }
@@ -401,20 +382,20 @@ export const updateReservation = async (req, res) => {
         updateData.reservationDate = parseDate(updateData.reservationDate);
       }
 
+      // 업데이트 전 예약 객체 상태
+      console.log('[updateReservation] Before updating, reservation:', reservation);
+
       Object.keys(updateData).forEach((key) => {
         reservation[key] = updateData[key];
       });
 
-      // 결제 방식 설정
-      if (availableOTAs.includes(reservation.siteName)) {
-        reservation.paymentMethod = 'OTA';
-      } else if (reservation.siteName === '현장예약') {
-        reservation.paymentMethod = updateData.paymentMethod || 'Pending';
-      } else {
-        reservation.paymentMethod = updateData.paymentMethod || 'Pending';
-      }
+      // 특히 roomNumber가 제대로 설정되었는지 확인
+      console.log('[updateReservation] After updating fields, roomNumber:', reservation.roomNumber);
 
+      // 결제방법 관련 로직 (생략)
       await reservation.save();
+      console.log('[updateReservation] After save, reservation:', reservation);
+
       logger.info(`Updated reservation: ${reservationId}`);
       res.send(reservation);
     } else {
@@ -427,6 +408,7 @@ export const updateReservation = async (req, res) => {
     res.status(500).send({ message: '서버 오류가 발생했습니다.' });
   }
 };
+
 
 // 취소된 예약 목록 가져오기
 export const getCanceledReservations = async (req, res) => {

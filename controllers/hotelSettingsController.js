@@ -1,239 +1,205 @@
-// backend/controllers/hotelSettingsController.js
-
+// backend/controllers/hotelSettings.controller.js
 import HotelSettingsModel from '../models/HotelSettings.js';
 import logger from '../utils/logger.js';
 import { defaultRoomTypes } from '../config/defaultRoomTypes.js';
-import initializeHotelCollection from '../utils/initializeHotelCollection.js';
 import availableOTAs from '../config/otas.js';
+import initializeHotelCollection from '../utils/initializeHotelCollection.js';
 
-// 호텔 설정 가져오기
+/**
+ * GET /hotel-settings
+ *  - Query parameter: hotelId (예: ?hotelId=xxxx)
+ *  - 해당 호텔의 설정이 존재하면 반환하고, 없으면 기본값(객실 타입, gridSettings 등)으로 새 문서를 생성 후 반환합니다.
+ */
 export const getHotelSettings = async (req, res) => {
-  const hotelId = req.query.hotelId || req.user.hotelId; // 인증된 사용자 정보에서 hotelId 추출
-  console.log('GET /hotel-settings called. hotelId:', hotelId); // 디버깅 로그
+  const hotelId = req.query.hotelId;
 
   if (!hotelId) {
-    return res.status(400).send({ message: '호텔 ID는 필수입니다.' });
+    return res.status(400).json({ message: 'hotelId는 필수입니다.' });
   }
 
   try {
-    // 호텔 설정 검색
-    let hotelSettings = await HotelSettingsModel.findOne({ hotelId }).select(
-      '-__v'
-    );
-
-    if (hotelSettings) {
-      res.status(200).json({
-        message: '호텔 설정이 성공적으로 검색되었습니다.',
-        data: hotelSettings,
+    const existing = await HotelSettingsModel.findOne({ hotelId }).select('-__v');
+    if (existing) {
+      // 이미 존재하면 그대로 반환
+      return res.status(200).json({
+        message: '호텔 설정 조회 성공',
+        data: existing,
       });
     } else {
-      // 설정이 없을 경우, 기본 설정 생성
-      const defaultSettings = {
-        user: req.user._id, // 사용자 ID 포함
+      // 새 호텔 설정 생성 시
+      const newSettings = new HotelSettingsModel({
         hotelId,
-        hotelName: req.user.hotelName || '',
-        totalRooms: 50, // 기본값
-        roomTypes: defaultRoomTypes, // 기본 룸 타입 로드
+        totalRooms: 50, // 초기값
+        roomTypes: defaultRoomTypes,
         otas: availableOTAs.map((ota) => ({ name: ota, isActive: false })),
-        email: req.user.email || '', // 사용자 이메일 기본
-        address: req.user.address || '', // 사용자 주소 기본
-        phoneNumber: req.user.phoneNumber || '', // 사용자 전화번호 기본
-        otaCredentials: {}, // 초기 OTA 자격 증명
-      };
+        // 그리드: 초기에는 빈 상태로 생성
+        gridSettings: { rows: 0, cols: 0, containers: [] },
+      });
+      await newSettings.save();
 
-      hotelSettings = new HotelSettingsModel(defaultSettings);
-      await hotelSettings.save();
-      logger.info(`Created default HotelSettings for hotelId: ${hotelId}`);
+      // 필요한 경우, 호텔 전용 컬렉션 초기화
+      await initializeHotelCollection(hotelId);
 
-      res.status(201).json({
-        message: '호텔 설정이 생성되었습니다.',
-        data: hotelSettings,
+      logger.info(`HotelSettings created with defaultRoomTypes for hotelId: ${hotelId}`);
+      return res.status(201).json({
+        message: '기본 룸타입으로 호텔 설정이 생성되었습니다.',
+        data: newSettings,
       });
     }
   } catch (error) {
-    logger.error('호텔 설정 검색 중 오류 발생:', error);
-    res
-      .status(500)
-      .send({ message: '서버 오류가 발생했습니다.', error: error.message });
+    logger.error('getHotelSettings error:', error);
+    return res.status(500).json({
+      message: '서버 오류가 발생했습니다.',
+      error: error.message,
+    });
   }
 };
 
-// 호텔 등록
+/**
+ * POST /hotel-settings/register
+ *  - 새로운 호텔 설정을 등록합니다.
+ *  - 요청 본문에는 hotelId, totalRooms, roomTypes, otas, gridSettings 등이 포함됩니다.
+ *  - gridSettings는 { rows, cols, containers } 형식이며,
+ *    containers 배열의 각 객체는 아래 필드를 사용할 수 있습니다:
+ *    {
+ *      containerId: string,
+ *      row: number,
+ *      col: number,
+ *      roomInfo: string,       // 여기서 '룸타입' 역할
+ *      roomNumber: string,
+ *      price: number
+ *    }
+ */
 export const registerHotel = async (req, res) => {
-  const {
-    hotelId,
-    hotelName,
-    totalRooms,
-    roomTypes,
-    email,
-    address,
-    phoneNumber,
-    otas,
-  } = req.body;
+  const { hotelId, totalRooms, roomTypes, otas, gridSettings } = req.body;
 
-  // 필수 입력값 검증 (호텔 이름 포함)
-  if (
-    !hotelId ||
-    !totalRooms ||
-    !email ||
-    !address ||
-    !phoneNumber ||
-    !hotelName
-  ) {
-    return res.status(400).send({
-      message:
-        '호텔 ID, 호텔 이름, 총 객실 수, 이메일, 주소, 전화번호는 필수입니다.',
-    });
+  if (!hotelId) {
+    return res.status(400).json({ message: 'hotelId는 필수입니다.' });
   }
 
   try {
-    // 이미 등록된 호텔인지 확인
-    const existingHotel = await HotelSettingsModel.findOne({ hotelId });
-    if (existingHotel) {
-      return res.status(409).send({ message: '이미 등록된 호텔 ID입니다.' });
+    const existing = await HotelSettingsModel.findOne({ hotelId });
+    if (existing) {
+      return res.status(409).json({ message: '이미 등록된 hotelId입니다.' });
     }
 
-    // 룸 타입이 제공되지 않으면 기본 룸 타입 사용
-    const finalRoomTypes =
-      Array.isArray(roomTypes) && roomTypes.length > 0
-        ? roomTypes
-        : defaultRoomTypes;
+    // roomTypes와 otas는 값이 없으면 기본값 사용
+    const finalRoomTypes = Array.isArray(roomTypes) && roomTypes.length > 0
+      ? roomTypes
+      : defaultRoomTypes;
+    const finalOTAs = Array.isArray(otas) && otas.length > 0
+      ? otas
+      : availableOTAs.map((ota) => ({ name: ota, isActive: false }));
 
-    // OTA 설정이 제공되지 않으면 기본값 사용
-    const finalOTAs =
-      Array.isArray(otas) && otas.length > 0
-        ? otas
-        : availableOTAs.map((ota) => ({ name: ota, isActive: false }));
+    // gridSettings가 제공되었을 경우, rows/cols/containers 필드 유효성 체크
+    const finalGridSettings = gridSettings && typeof gridSettings === 'object'
+      ? {
+          rows: gridSettings.rows || 0,
+          cols: gridSettings.cols || 0,
+          containers: Array.isArray(gridSettings.containers)
+            ? gridSettings.containers
+            : [],
+        }
+      : { rows: 0, cols: 0, containers: [] };
 
-    // 새로운 호텔 등록 (hotelName 추가)
-    const newHotel = new HotelSettingsModel({
+    const newSettings = new HotelSettingsModel({
       hotelId,
-      hotelName, // 추가된 부분
-      totalRooms,
+      totalRooms: totalRooms || 50,
       roomTypes: finalRoomTypes,
       otas: finalOTAs,
-      email,
-      address,
-      phoneNumber,
+      gridSettings: finalGridSettings,
     });
-    await newHotel.save();
-    await initializeHotelCollection(hotelId);
-    logger.info('New hotel registered:', hotelId);
 
-    res
-      .status(201)
-      .send({ message: '호텔이 성공적으로 등록되었습니다.', data: newHotel });
+    await newSettings.save();
+    await initializeHotelCollection(hotelId);
+
+    return res.status(201).json({
+      message: '호텔 설정이 성공적으로 등록되었습니다.',
+      data: newSettings,
+    });
   } catch (error) {
-    logger.error('호텔 등록 중 오류 발생:', error);
+    logger.error('registerHotel error:', error);
     if (error.name === 'ValidationError') {
-      return res.status(400).send({ message: error.message });
+      return res.status(400).json({ message: error.message });
     }
-    res
-      .status(500)
-      .send({ message: '서버 오류가 발생했습니다.', error: error.message });
+    return res.status(500).json({
+      message: '서버 오류가 발생했습니다.',
+      error: error.message,
+    });
   }
 };
 
+/**
+ * PATCH /hotel-settings/:hotelId
+ *  - 호텔 설정의 부분 업데이트를 수행합니다.
+ *  - 업데이트 가능한 필드: totalRooms, roomTypes, otas, gridSettings, otaCredentials 등
+ *  - gridSettings 업데이트 시, { rows, cols, containers } 형태여야 하며,
+ *    containers 각 객체는 { containerId, row, col, roomInfo, roomNumber, price } 필드를 포함할 수 있습니다.
+ */
 export const updateHotelSettings = async (req, res) => {
   const { hotelId } = req.params;
-  const {
-    hotelName,
-    totalRooms,
-    roomTypes,
-    address,
-    phoneNumber,
-    email,
-    otas,
-    otaCredentials,
-  } = req.body;
-
-  console.log(`Received update request for hotelId: ${hotelId}`);
-  console.log('Request Body:', req.body);
+  const { totalRooms, roomTypes, otas, gridSettings, otaCredentials } = req.body;
 
   if (!hotelId) {
-    return res.status(400).send({ message: '호텔 ID는 필수입니다.' });
+    return res.status(400).json({ message: 'hotelId는 필수입니다.' });
   }
 
+  // 배열형 필드 검증
   if (roomTypes && !Array.isArray(roomTypes)) {
-    return res.status(400).send({ message: 'roomTypes는 배열이어야 합니다.' });
+    return res.status(400).json({ message: 'roomTypes는 배열이어야 합니다.' });
   }
-
-  if (roomTypes) {
-    for (const roomType of roomTypes) {
-      if (!roomType.nameKor || !roomType.nameEng) {
-        return res.status(400).send({
-          message: '각 roomType은 nameKor와 nameEng를 포함해야 합니다.',
-        });
-      }
-      if (
-        typeof roomType.price !== 'number' ||
-        typeof roomType.stock !== 'number'
-      ) {
-        return res.status(400).send({
-          message:
-            '각 roomType은 price와 stock을 포함한 유효한 숫자이어야 합니다.',
-        });
-      }
-    }
-  }
-
   if (otas && !Array.isArray(otas)) {
-    return res.status(400).send({ message: 'otas는 배열이어야 합니다.' });
-  }
-
-  if (otas) {
-    for (const ota of otas) {
-      if (!ota.name || typeof ota.isActive !== 'boolean') {
-        return res.status(400).send({
-          message: '각 OTA는 name과 isActive를 포함해야 합니다.',
-        });
-      }
-      if (!availableOTAs.includes(ota.name)) {
-        return res.status(400).send({
-          message: `유효하지 않은 OTA 이름: ${ota.name}.`,
-        });
-      }
-    }
+    return res.status(400).json({ message: 'otas는 배열이어야 합니다.' });
   }
 
   try {
     const updateData = {};
-    if (hotelName !== undefined) updateData.hotelName = hotelName;
-    if (totalRooms !== undefined) updateData.totalRooms = totalRooms;
-    if (roomTypes !== undefined) updateData.roomTypes = roomTypes;
-    if (address !== undefined) updateData.address = address;
-    if (phoneNumber !== undefined) updateData.phoneNumber = phoneNumber;
-    if (email !== undefined) updateData.email = email;
-    if (otas !== undefined) updateData.otas = otas;
 
-    // ==== (추가) otaCredentials.yanolja가 있다면 업데이트 ====
-    // "야놀자"를 사용하는 호텔만 이 값을 전송할 것
-    if (otaCredentials?.yanolja) {
-      updateData['otaCredentials.yanolja'] = otaCredentials.yanolja;
+    // 필요한 필드만 updateData에 세팅
+    if (typeof totalRooms === 'number') {
+      updateData.totalRooms = totalRooms;
+    }
+    if (roomTypes !== undefined) {
+      updateData.roomTypes = roomTypes;
+    }
+    if (otas !== undefined) {
+      updateData.otas = otas;
+    }
+    if (gridSettings !== undefined && typeof gridSettings === 'object') {
+      updateData.gridSettings = {
+        rows: gridSettings.rows || 0,
+        cols: gridSettings.cols || 0,
+        containers: Array.isArray(gridSettings.containers)
+          ? gridSettings.containers
+          : [],
+      };
+    }
+    if (otaCredentials !== undefined) {
+      updateData.otaCredentials = otaCredentials;
     }
 
-    const updatedHotelSettings = await HotelSettingsModel.findOneAndUpdate(
+    const updated = await HotelSettingsModel.findOneAndUpdate(
       { hotelId },
-      updateData,
+      { $set: updateData },
       { new: true, runValidators: true }
     );
 
-    if (updatedHotelSettings) {
-      res.status(200).json({
-        message: '호텔 설정이 성공적으로 업데이트되었습니다.',
-        data: updatedHotelSettings,
-      });
-    } else {
-      res.status(404).send({ message: '해당 호텔 설정을 찾을 수 없습니다.' });
+    if (!updated) {
+      return res.status(404).json({ message: '해당 호텔 설정이 없습니다.' });
     }
+
+    return res.status(200).json({
+      message: '호텔 설정이 성공적으로 업데이트되었습니다.',
+      data: updated,
+    });
   } catch (error) {
-    logger.error('호텔 설정 업데이트 중 오류 발생:', error);
-    // Mongoose 유효성 검사 에러 처리
+    logger.error('updateHotelSettings error:', error);
     if (error.name === 'ValidationError') {
-      return res.status(400).send({ message: error.message });
+      return res.status(400).json({ message: error.message });
     }
-    res
-      .status(500)
-      .send({ message: '서버 오류가 발생했습니다.', error: error.message });
+    return res.status(500).json({
+      message: '서버 오류가 발생했습니다.',
+      error: error.message,
+    });
   }
 };
