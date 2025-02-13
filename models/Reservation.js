@@ -29,6 +29,10 @@ const ReservationSchema = new mongoose.Schema(
       type: String,
       default: '',
     },
+    roomNumber: {
+      type: String,
+      default: '', // <-- 추가: roomNumber 필드
+    },
     checkIn: {
       type: Date,
       required: true,

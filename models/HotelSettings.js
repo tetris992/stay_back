@@ -2,94 +2,75 @@
 
 import mongoose from 'mongoose';
 import { defaultRoomTypes } from '../config/defaultRoomTypes.js';
-import availableOTAs from '../config/otas.js'; // OTA 목록
+import availableOTAs from '../config/otas.js';
 
-//
-// 1. Puppeteer 쿠키 구조를 위한 Schema
-//
-const cookieSchema = new mongoose.Schema(
+/**
+ * OTA 설정 스키마
+ */
+const otaSchema = new mongoose.Schema(
   {
-    name: { type: String },
-    value: { type: String },
-    domain: { type: String },
-    path: { type: String },
-    expires: { type: Number },
-    httpOnly: { type: Boolean },
-    secure: { type: Boolean },
-    // 필요한 필드만 선택해서 정의 가능
+    name: { type: String, enum: availableOTAs, required: true },
+    isActive: { type: Boolean, default: false },
   },
   { _id: false }
 );
 
-//
-// 2. OTA 스키마 (현재 otaSchema는 OTA 이름, 활성화 여부 등)
-//
-const otaSchema = new mongoose.Schema({
-  name: { type: String, enum: availableOTAs, required: true },
-  isActive: { type: Boolean, default: false },
-});
-
-//
-// 3. 각 OTA의 로그인 정보 스키마 (기존)
-//   - 여기서 "yanolja" 필드를 새로 정의.
-//
-const otaCredentialsSchema = new mongoose.Schema(
-  {
-    expediaCredentials: {
-      email: { type: String, required: false },
-      password: { type: String, required: false },
-    },
-    agodaCredentials: {
-      email: { type: String, required: false },
-      password: { type: String, required: false },
-    },
-
-    // === (새로 추가) 야놀자(yanolja) 자격증명 ===
-    yanolja: {
-      loginId: { type: String },
-      loginPw: { type: String },
-      cookies: [cookieSchema], // Puppeteer로 얻은 쿠키 배열
-    },
-
-    // 다른 OTA에 대한 로그인 정보 추가 가능
-  },
-  { _id: false }
-);
-
-//
-// 4. RoomType 스키마 (기존)
-//
+/**
+ * 객실 타입 스키마
+ * - 각 객실 타입은 내부 키(roomInfo), 한글/영문 이름, 가격, 재고, 별칭(alias) 등을 가집니다.
+ */
 const RoomTypeSchema = new mongoose.Schema(
   {
-    type: { type: String, required: true },
+    // 내부적으로 "roomInfo"를 고유 식별 키로 사용 (ex: 'standard', 'premium' 등)
+    roomInfo: { type: String, required: true },
     nameKor: { type: String, required: true },
     nameEng: { type: String, required: true },
     price: { type: Number, required: true },
-    stock: { type: Number, required: true },
+    stock: { type: Number, required: true }, // gridSettings.containers 개수를 기반으로 업데이트 가능
     aliases: [{ type: String, lowercase: true }],
   },
   { _id: false }
 );
 
-//
-// 5. HotelSettings 스키마 (전체 구조)
-//
+/**
+ * 컨테이너(그리드 셀) 스키마
+ * - 각 셀(객실)의 containerId, 위치(row, col), roomInfo(객실 이름/타입), 객실번호, 가격 등의 정보를 저장
+ */
+const ContainerSchema = new mongoose.Schema(
+  {
+    containerId: { type: String, required: true },
+    row: { type: Number, required: true },
+    col: { type: Number, required: true },
+    roomInfo: { type: String, required: true },   // 과거 roomType → roomInfo로 변경
+    roomNumber: { type: String, required: true },
+    price: { type: Number, required: true },
+  },
+  { _id: false }
+);
+
+/**
+ * 레이아웃/그리드 스키마
+ */
+const GridSettingsSchema = new mongoose.Schema(
+  {
+    rows: { type: Number, default: 0 },
+    cols: { type: Number, default: 0 },
+    containers: { type: [ContainerSchema], default: [] },
+  },
+  { _id: false }
+);
+
+/**
+ * HotelSettings 스키마
+ */
 const HotelSettingsSchema = new mongoose.Schema(
   {
-    user: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'User',
-      required: true,
-      unique: true,
-    },
     hotelId: {
       type: String,
       required: true,
       unique: true,
-    },
-    hotelName: {
-      type: String,
-      required: false,
+      index: true,
+      trim: true,
     },
     totalRooms: {
       type: Number,
@@ -97,6 +78,7 @@ const HotelSettingsSchema = new mongoose.Schema(
       default: 50,
       min: [1, '총 객실 수는 최소 1개 이상이어야 합니다.'],
     },
+    // roomTypes 배열: 기본값은 defaultRoomTypes (이미 roomInfo로 구성됨)
     roomTypes: {
       type: [RoomTypeSchema],
       default: defaultRoomTypes,
@@ -107,23 +89,24 @@ const HotelSettingsSchema = new mongoose.Schema(
         message: '적어도 하나의 객실 타입이 필요합니다.',
       },
     },
+    // OTA 설정들
     otas: {
       type: [otaSchema],
       default: availableOTAs.map((ota) => ({ name: ota, isActive: false })),
     },
-
-    email: { type: String, required: true },
-    address: { type: String, required: true },
-    phoneNumber: { type: String, required: true },
-
-    // === (중요) 각 OTA 자격증명(아이디,비번,쿠키)을 담는 필드 ===
     otaCredentials: {
-      type: otaCredentialsSchema,
+      type: Object,
       default: {},
+    },
+    // 그리드 설정
+    gridSettings: {
+      type: GridSettingsSchema,
+      default: { rows: 0, cols: 0, containers: [] },
     },
   },
   { timestamps: true }
 );
 
 const HotelSettings = mongoose.model('HotelSettings', HotelSettingsSchema);
+
 export default HotelSettings;

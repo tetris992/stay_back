@@ -192,10 +192,9 @@ export const logout = async (req, res) => {
   }
 };
 
-// 사용자 등록 함수 수정
 export const registerUser = async (req, res) => {
-  // 수정된 부분: hotelName도 필수 항목으로 받음
-  const { hotelId, hotelName, password, email, address, phoneNumber } =
+  // 클라이언트로부터 consentChecked도 받음
+  const { hotelId, hotelName, password, email, address, phoneNumber, consentChecked } =
     req.body;
 
   if (
@@ -206,12 +205,10 @@ export const registerUser = async (req, res) => {
     !address ||
     !phoneNumber
   ) {
-    return res
-      .status(400)
-      .send({
-        message:
-          '모든 필수 입력값(호텔 ID, 호텔 이름, 비밀번호, 이메일, 주소, 전화번호)을 입력해주세요.',
-      });
+    return res.status(400).send({
+      message:
+        '모든 필수 입력값(호텔 ID, 호텔 이름, 비밀번호, 이메일, 주소, 전화번호)을 입력해주세요.',
+    });
   }
 
   try {
@@ -228,7 +225,6 @@ export const registerUser = async (req, res) => {
       return res.status(409).send({ message });
     }
 
-    // 수정된 부분: hotelName 필드를 포함하여 새로운 사용자 생성
     const newUser = new User({
       hotelId,
       hotelName,
@@ -236,24 +232,22 @@ export const registerUser = async (req, res) => {
       email,
       address,
       phoneNumber,
+      consentChecked: Boolean(consentChecked), // 동의 여부 저장
+      consentAt: consentChecked ? new Date() : null, // 동의 시 현재 시간을 저장
     });
     await newUser.save();
     logger.info('New user account created:', hotelId);
-
-    // 스크래핑 시작
-    await scraperManager.startScraping(newUser.hotelId);
-    logger.info(
-      `Scraping started for hotelId: ${newUser.hotelId} upon registration.`
-    );
 
     res.status(201).send({
       message: 'User account registered successfully',
       data: {
         hotelId: newUser.hotelId,
-        hotelName: newUser.hotelName, // 수정된 부분: 반환 데이터에 호텔 이름 포함
+        hotelName: newUser.hotelName,
         email: newUser.email,
         address: newUser.address,
         phoneNumber: newUser.phoneNumber,
+        consentChecked: newUser.consentChecked,
+        consentAt: newUser.consentAt,
         createdAt: newUser.createdAt,
         updatedAt: newUser.updatedAt,
       },
@@ -298,7 +292,6 @@ export const getUserInfo = async (req, res) => {
   }
 };
 
-
 // 사용자 정보 업데이트 함수 추가
 export const updateUser = async (req, res) => {
   const { hotelId } = req.params;
@@ -342,7 +335,6 @@ export const updateUser = async (req, res) => {
     res.status(500).json({ message: '서버 오류가 발생했습니다.' });
   }
 };
-
 
 // POST /auth/consent
 /**
