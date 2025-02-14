@@ -267,6 +267,7 @@ export const createOrUpdateReservations = async (req, res) => {
       }
 
       // 기존 정상 예약이 있는 경우
+      // 기존 정상 예약이 있는 경우
       if (existingReservation) {
         if (cancelled) {
           // 정상 예약에서 취소 상태로 변경
@@ -278,7 +279,14 @@ export const createOrUpdateReservations = async (req, res) => {
           await newCanceled.save();
           logger.info(`Moved reservation to canceled: ${reservationId}`);
         } else {
-          // 정상 예약 업데이트
+          // OTA 예약의 경우, 수동 배정(manualAssignment: true)이라면
+          // 기존에 할당된 roomNumber와 roomInfo를 유지하도록 함.
+          if (availableOTAs.includes(siteName)) {
+            updateData.roomNumber = existingReservation.roomNumber;
+            updateData.roomInfo = existingReservation.roomInfo;
+            // 가격은 OTA 예약의 경우 변경하면 안 되므로 기존 가격 유지
+            updateData.price = existingReservation.price;
+          }
           await Reservation.updateOne({ _id: reservationId }, updateData, {
             runValidators: true,
             strict: true,
