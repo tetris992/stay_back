@@ -151,81 +151,7 @@ export const getReservations = async (req, res) => {
 };
 
 // 예약 생성 또는 업데이트
-export const createOrUpdateReservations = async (req, res) => {
-  const { siteName, reservations, hotelId } = req.body;
-  const finalHotelId = hotelId || req.user.hotelId;
-
-  if (!siteName || !reservations || !finalHotelId) {
-    return res.status(400).send({
-      message: 'siteName, reservations, hotelId 필드는 필수입니다.',
-    });
-  }
-
-  try {
-    await initializeHotelCollection(finalHotelId);
-    const Reservation = getReservationModel(finalHotelId);
-    const CanceledReservation = getCanceledReservationModel(finalHotelId);
-    const createdReservationIds = [];
-
-    for (const reservation of reservations) {
-      if (!reservation.reservationNo || reservation.reservationNo === 'N/A') {
-        logger.warn(
-          'Skipping reservation with invalid reservation number',
-          reservation
-        );
-        continue;
-      }
-
-      const reservationId = `${siteName}-${reservation.reservationNo}`;
-      let checkOutDate = reservation.checkOut;
-      if (!/\d{2}:\d{2}/.test(checkOutDate)) {
-        checkOutDate += ' 11:00';
-      }
-      const checkIn = parseDate(reservation.checkIn);
-      const checkOut = parseDate(checkOutDate);
-      if (!checkIn || !checkOut || checkIn >= checkOut) {
-        logger.warn('Skipping reservation with invalid dates', reservation);
-        continue;
-      }
-
-      let paymentMethod = '정보 없음';
-      if (availableOTAs.includes(siteName)) {
-        paymentMethod =
-          reservation.paymentMethod && reservation.paymentMethod.trim() !== ''
-            ? reservation.paymentMethod.trim()
-            : 'OTA';
-      } else if (siteName === '현장예약') {
-        paymentMethod = reservation.paymentMethod || 'Pending';
-      } else {
-        paymentMethod = reservation.paymentMethod || 'Pending';
-      }
-
-      const sanitizedPhoneNumber = sanitizePhoneNumber(
-        reservation.phoneNumber || ''
-      );
-      const parsedReservationDate =
-        parseDate(reservation.reservationDate) || new Date();
-
-      const updateData = {
-        siteName,
-        customerName: reservation.customerName,
-        phoneNumber: sanitizedPhoneNumber,
-        roomInfo: reservation.roomInfo,
-        checkIn,
-        checkOut,
-        reservationDate: parsedReservationDate,
-        reservationStatus: reservation.reservationStatus || 'Pending',
-        price: parsePrice(reservation.price),
-        specialRequests: reservation.specialRequests || null,
-        additionalFees: reservation.additionalFees || 0,
-        couponInfo: reservation.couponInfo || null,
-        paymentStatus: reservation.paymentStatus || '확인 필요',
-        paymentMethod,
-        hotelId: finalHotelId,
-      };
-
-      // 기존에 roomNumber가 있다면 그대로 사용, 없으면 자동 할당
-      // 예약 생성 또는 업데이트
+// 예약 생성 또는 업데이트
 export const createOrUpdateReservations = async (req, res) => {
   const { siteName, reservations, hotelId } = req.body;
   const finalHotelId = hotelId || req.user.hotelId;
@@ -310,7 +236,9 @@ export const createOrUpdateReservations = async (req, res) => {
 
       // 기존 예약과 취소된 예약 컬렉션에서 확인
       const existingReservation = await Reservation.findById(reservationId);
-      const existingCanceled = await CanceledReservation.findById(reservationId);
+      const existingCanceled = await CanceledReservation.findById(
+        reservationId
+      );
 
       // 이미 취소 콜렉션에 존재하는 경우
       if (existingCanceled) {
@@ -331,7 +259,9 @@ export const createOrUpdateReservations = async (req, res) => {
             isCancelled: false,
           });
           await newReservation.save();
-          logger.info(`Moved canceled reservation back to normal: ${reservationId}`);
+          logger.info(
+            `Moved canceled reservation back to normal: ${reservationId}`
+          );
         }
         continue; // 다음 예약으로 이동
       }
@@ -394,7 +324,6 @@ export const createOrUpdateReservations = async (req, res) => {
     res.status(500).send({ message: '서버 오류가 발생했습니다.' });
   }
 };
-
 
 // 예약 삭제 컨트롤러
 export const deleteReservation = async (req, res) => {
@@ -513,14 +442,20 @@ export const updateReservation = async (req, res) => {
       }
 
       // 업데이트 전 예약 객체 상태
-      console.log('[updateReservation] Before updating, reservation:', reservation);
+      console.log(
+        '[updateReservation] Before updating, reservation:',
+        reservation
+      );
 
       Object.keys(updateData).forEach((key) => {
         reservation[key] = updateData[key];
       });
 
       // 특히 roomNumber가 제대로 설정되었는지 확인
-      console.log('[updateReservation] After updating fields, roomNumber:', reservation.roomNumber);
+      console.log(
+        '[updateReservation] After updating fields, roomNumber:',
+        reservation.roomNumber
+      );
 
       // 결제방법 관련 로직 (생략)
       await reservation.save();
@@ -539,7 +474,6 @@ export const updateReservation = async (req, res) => {
   }
 };
 
-
 // 취소된 예약 목록 가져오기
 export const getCanceledReservations = async (req, res) => {
   const { hotelId } = req.query;
@@ -551,9 +485,12 @@ export const getCanceledReservations = async (req, res) => {
   const CanceledReservation = getCanceledReservationModel(hotelId);
 
   try {
-    // 취소된 예약 전용 컬렉션에서 예약들을 조회합니다.
+    // 취소된 예약 전용 콜렉션에서 직접 찾는다.
     const canceledReservations = await CanceledReservation.find();
+
+    // canceledReservations가 제대로 조회되는지 콘솔 확인
     console.log('Fetched canceled reservations:', canceledReservations);
+
     res.status(200).send(canceledReservations);
   } catch (error) {
     logger.error('취소된 예약 가져오는 중 오류 발생:', error);
