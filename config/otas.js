@@ -1,7 +1,7 @@
 // backend/config/otas.js
 
 const availableOTAs = [
-  'Yanolja',
+  'YanoljaMotel',
   'GoodHotel',
   'GoodMotel',
   'Agoda',
