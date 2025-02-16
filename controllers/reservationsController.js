@@ -11,7 +11,7 @@ import { format } from 'date-fns';
 
 // [추가된 부분: 호텔 설정 모델과 알림톡 전송 모듈 추가]
 import HotelSettingsModel from '../models/HotelSettings.js';
-// import { sendReservationConfirmation } from '../utils/sendAlimtalk.js';
+import { sendReservationConfirmation } from '../utils/sendAlimtalk.js'; //이코를 임포트해서 사용하려면 코드업뎃필요
 
 // 전화번호에서 숫자만 추출하는 헬퍼 함수
 function sanitizePhoneNumber(phoneNumber) {
@@ -225,7 +225,7 @@ export const createOrUpdateReservations = async (req, res) => {
         hotelId: finalHotelId,
       };
 
-      // ★ 취소 여부 판별 (취소문자열 존재 여부 등) – isCancelledStatus 함수 사용
+      // ★ 취소 여부 판별 (isCancelledStatus 함수 사용)
       const cancelled = isCancelledStatus(
         updateData.reservationStatus,
         updateData.customerName,
@@ -234,16 +234,16 @@ export const createOrUpdateReservations = async (req, res) => {
       );
       updateData.isCancelled = cancelled;
 
-      // 기존 예약과 취소된 예약 컬렉션에서 확인
+      // 기존 예약 및 취소된 예약 컬렉션에서 확인
       const existingReservation = await Reservation.findById(reservationId);
       const existingCanceled = await CanceledReservation.findById(
         reservationId
       );
 
-      // 이미 취소 콜렉션에 존재하는 경우
+      // [수정된 부분 1] : 기존 취소 컬렉션에 존재하는 경우 처리
       if (existingCanceled) {
         if (cancelled) {
-          // 계속 취소 상태라면 업데이트
+          // 계속 취소 상태이면 업데이트
           await CanceledReservation.updateOne(
             { _id: reservationId },
             updateData,
@@ -251,7 +251,7 @@ export const createOrUpdateReservations = async (req, res) => {
           );
           logger.info(`Updated canceled reservation: ${reservationId}`);
         } else {
-          // 취소 상태에서 정상 예약으로 복귀하는 경우
+          // 취소 상태에서 정상 예약으로 복귀
           await CanceledReservation.deleteOne({ _id: reservationId });
           const newReservation = new Reservation({
             _id: reservationId,
@@ -266,8 +266,7 @@ export const createOrUpdateReservations = async (req, res) => {
         continue; // 다음 예약으로 이동
       }
 
-      // 기존 정상 예약이 있는 경우
-      // 기존 정상 예약이 있는 경우
+      // [수정된 부분 2] : 기존 정상 예약이 있는 경우 처리
       if (existingReservation) {
         if (cancelled) {
           // 정상 예약에서 취소 상태로 변경
@@ -279,12 +278,10 @@ export const createOrUpdateReservations = async (req, res) => {
           await newCanceled.save();
           logger.info(`Moved reservation to canceled: ${reservationId}`);
         } else {
-          // OTA 예약의 경우, 수동 배정(manualAssignment: true)이라면
-          // 기존에 할당된 roomNumber와 roomInfo를 유지하도록 함.
+          // OTA 예약의 경우, 수동 배정(manualAssignment: true)이라면 기존 값 유지
           if (availableOTAs.includes(siteName)) {
             updateData.roomNumber = existingReservation.roomNumber;
             updateData.roomInfo = existingReservation.roomInfo;
-            // 가격은 OTA 예약의 경우 변경하면 안 되므로 기존 가격 유지
             updateData.price = existingReservation.price;
           }
           await Reservation.updateOne({ _id: reservationId }, updateData, {
@@ -295,7 +292,7 @@ export const createOrUpdateReservations = async (req, res) => {
           logger.info(`Updated reservation: ${reservationId}`);
         }
       } else {
-        // 새로운 예약인 경우
+        // [수정된 부분 3] : 새로운 예약 생성 시 처리
         if (cancelled) {
           const newCanceled = new CanceledReservation({
             _id: reservationId,
@@ -320,6 +317,30 @@ export const createOrUpdateReservations = async (req, res) => {
           await newReservation.save();
           logger.info(`Created new reservation: ${reservationId}`);
           createdReservationIds.push(reservationId);
+
+          // [수정된 부분 4] : 현장예약인 경우 알림톡 전송
+          if (siteName === '현장예약') {
+            try {
+              const hotelSettings = await HotelSettingsModel.findOne({
+                hotelId: finalHotelId,
+              });
+              if (hotelSettings) {
+                await sendReservationConfirmation(
+                  newReservation.toObject(),
+                  hotelSettings.toObject()
+                );
+                logger.info(`알림톡 전송 성공: ${reservationId}`);
+              } else {
+                logger.warn(
+                  `호텔 설정 정보를 찾을 수 없습니다 (hotelId: ${finalHotelId})`
+                );
+              }
+            } catch (err) {
+              logger.error(
+                `알림톡 전송 처리 중 오류 (예약ID: ${reservationId}): ${err.message}`
+              );
+            }
+          }
         }
       }
     }
@@ -493,10 +514,8 @@ export const getCanceledReservations = async (req, res) => {
   const CanceledReservation = getCanceledReservationModel(hotelId);
 
   try {
-    // 취소된 예약 전용 콜렉션에서 직접 찾는다.
     const canceledReservations = await CanceledReservation.find();
 
-    // canceledReservations가 제대로 조회되는지 콘솔 확인
     console.log('Fetched canceled reservations:', canceledReservations);
 
     res.status(200).send(canceledReservations);

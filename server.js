@@ -124,7 +124,7 @@ app.use((req, res, next) => {
 app.use(
   rateLimit({
     windowMs: 15 * 60 * 1000,
-    max: 500,
+    max: 1000,
     message: 'Too many requests from this IP, please try again later.',
     standardHeaders: true, // RateLimit 관련 헤더 추가
     legacyHeaders: false, // X-RateLimit-* 헤더 비활성화
