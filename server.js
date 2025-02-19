@@ -47,7 +47,7 @@ const __dirname = dirname(__filename);
 
 // CORS_ORIGIN 환경변수가 비어있는 경우를 대비해 처리
 let allowedOrigins = [
-  'http://staysync.me',
+  'https://staysync.me',
   'https://tetris992.github.io',
   'https://pms.coolstay.co.kr',
   'https://admin.booking.com',
@@ -58,7 +58,8 @@ let allowedOrigins = [
   'https://apps.expediapartnercentral.com',
   'https://ycs.agoda.com',
   'http://localhost:3000',
-  'https://container-service-1.302qcbg9eaynw.ap-northeast-2.cs.amazonlightsail.com',
+  'https://ztoone.co.kr',
+  'https://www.ztoone.co.kr',
   'chrome-extension://cnoicicjafgmfcnjclhlehfpojfaelag',
 ];
 if (process.env.CORS_ORIGIN) {
@@ -151,7 +152,6 @@ app.use('/auth', authRoutes); // 인증 라우트 (로그인, 회원가입, 비�
 // /reservations 및 /hotel-settings 라우트에 protect 미들웨어를 먼저 적용한 후, ensureConsent 미들웨어를 적용합니다.
 app.use('/reservations', protect, ensureConsent, reservationsRoutes); // 수정된 부분
 app.use('/hotel-settings', protect, ensureConsent, hotelSettingsRoutes); // 수정된 부분
-
 app.use('/status', statusRoutes);
 app.use('/chrome', chromeRoutes);
 app.use('/api/scrape', scraperTasksRoutes);

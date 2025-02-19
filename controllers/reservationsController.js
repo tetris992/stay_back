@@ -11,8 +11,7 @@ import { format } from 'date-fns';
 
 // [추가된 부분: 호텔 설정 모델과 알림톡 전송 모듈 추가]
 import HotelSettingsModel from '../models/HotelSettings.js';
-import { sendReservationConfirmation } from '../utils/sendAlimtalk.js'; //이코를 임포트해서 사용하려면 코드업뎃필요
-
+// import { sendReservationConfirmation } from '../utils/sendAlimtalk.js'; 이건 노드.js로 분리
 // 전화번호에서 숫자만 추출하는 헬퍼 함수
 function sanitizePhoneNumber(phoneNumber) {
   if (!phoneNumber) return '';
@@ -150,7 +149,6 @@ export const getReservations = async (req, res) => {
   }
 };
 
-// 예약 생성 또는 업데이트
 // 예약 생성 또는 업데이트
 export const createOrUpdateReservations = async (req, res) => {
   const { siteName, reservations, hotelId } = req.body;
@@ -318,23 +316,15 @@ export const createOrUpdateReservations = async (req, res) => {
           logger.info(`Created new reservation: ${reservationId}`);
           createdReservationIds.push(reservationId);
 
-          // [수정된 부분 4] : 현장예약인 경우 알림톡 전송
+          // 현장예약인 경우 알림톡 전송
           if (siteName === '현장예약') {
             try {
-              const hotelSettings = await HotelSettingsModel.findOne({
+              // 외부 게이트웨이로 알림톡 전송 요청
+              await axios.post('http://3.36.72.68:3000/send-alert', {
+                reservation: newReservation.toObject(),
                 hotelId: finalHotelId,
               });
-              if (hotelSettings) {
-                await sendReservationConfirmation(
-                  newReservation.toObject(),
-                  hotelSettings.toObject()
-                );
-                logger.info(`알림톡 전송 성공: ${reservationId}`);
-              } else {
-                logger.warn(
-                  `호텔 설정 정보를 찾을 수 없습니다 (hotelId: ${finalHotelId})`
-                );
-              }
+              logger.info(`알림톡 전송 요청 성공: ${reservationId}`);
             } catch (err) {
               logger.error(
                 `알림톡 전송 처리 중 오류 (예약ID: ${reservationId}): ${err.message}`
