@@ -48,7 +48,6 @@ const __dirname = dirname(__filename);
 // CORS_ORIGIN 환경변수가 비어있는 경우를 대비해 처리
 let allowedOrigins = [
   'https://staysync.me',
-  'https://tetris992.github.io',
   'https://pms.coolstay.co.kr',
   'https://admin.booking.com',
   'https://ad.goodchoice.kr',
@@ -59,7 +58,6 @@ let allowedOrigins = [
   'https://ycs.agoda.com',
   'http://localhost:3000',
   'https://ztoone.co.kr',
-  'https://www.ztoone.co.kr',
   'chrome-extension://cnoicicjafgmfcnjclhlehfpojfaelag',
 ];
 if (process.env.CORS_ORIGIN) {
@@ -105,6 +103,7 @@ const csrfExcludedRoutes = [
   /^\/auth\/refresh-token$/,
   /^\/reservations$/, // 추가
   /^\/hotel-settings$/, // 추가
+  /^\/hotel-settings\//, // 호텔 설정의 하위 라우트도 예외로 처리
   /^\/auth\/refresh-token$/, // 클라이언트쪽에서 Refresh Token 요청 제외
   /^\/auth\/reset-password\/.+$/,
   /^\/csrf-token$/, // 이미 CSRF 보호된 라우트
