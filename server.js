@@ -59,7 +59,6 @@ let allowedOrigins = [
   'https://ycs.agoda.com',
   'http://localhost:3000',
   'https://ztoone.co.kr',
-  'https://www.ztoone.co.kr',
   'chrome-extension://cnoicicjafgmfcnjclhlehfpojfaelag',
 ];
 if (process.env.CORS_ORIGIN) {
