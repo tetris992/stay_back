@@ -68,7 +68,17 @@ if (process.env.CORS_ORIGIN) {
 app.use(
   cors({
     origin: allowedOrigins,
-    methods: ['GET', 'POST', 'PATCH', 'DELETE'],
+    methods: [
+      'GET',
+      'POST',
+      'PATCH',
+      'DELETE',
+      'PUT',
+      'OPTIONS',
+      'HEAD',
+      'CONNECT',
+      'TRACE',
+    ],
     credentials: true,
     allowedHeaders: [
       'Authorization',
@@ -102,6 +112,7 @@ const csrfExcludedRoutes = [
   /^\/auth\/register$/,
   /^\/auth\/refresh-token$/,
   /^\/reservations$/, // 추가
+  /^\/reservations\//, 
   /^\/hotel-settings$/, // 추가
   /^\/hotel-settings\//, // 호텔 설정의 하위 라우트도 예외로 처리
   /^\/auth\/refresh-token$/, // 클라이언트쪽에서 Refresh Token 요청 제외
