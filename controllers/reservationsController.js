@@ -316,15 +316,15 @@ export const createOrUpdateReservations = async (req, res) => {
           logger.info(`Created new reservation: ${reservationId}`);
           createdReservationIds.push(reservationId);
 
-          // 현장예약인 경우 알림톡 전송
+          // [수정된 부분 4] : 현장예약인 경우 알림톡 전송
           if (siteName === '현장예약') {
             try {
-              // 외부 게이트웨이로 알림톡 전송 요청
-              await axios.post('http://3.36.72.68:3000/send-alert', {
-                reservation: newReservation.toObject(),
-                hotelId: finalHotelId,
-              });
-              logger.info(`알림톡 전송 요청 성공: ${reservationId}`);
+              // sendReservationConfirmation 함수는 내부에서 User 정보를 조회하므로 hotelId만 전달합니다.
+              await sendReservationConfirmation(
+                newReservation.toObject(),
+                finalHotelId
+              );
+              logger.info(`알림톡 전송 성공: ${reservationId}`);
             } catch (err) {
               logger.error(
                 `알림톡 전송 처리 중 오류 (예약ID: ${reservationId}): ${err.message}`
@@ -334,6 +334,7 @@ export const createOrUpdateReservations = async (req, res) => {
         }
       }
     }
+
     res.status(201).json({
       message: 'Reservations processed successfully',
       createdReservationIds,

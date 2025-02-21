@@ -25,11 +25,18 @@ import ensureConsent from './middleware/consentMiddleware.js';
 
 // === [ADD] 인증 미들웨어 임포트 ===
 import { protect } from './middleware/authMiddleware.js';
-
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 
-dotenv.config();
+// 개발/프로덕션 환경별 .env 파일 로드
+if (process.env.NODE_ENV === 'development') {
+  dotenv.config({ path: '.env.development' });
+} else {
+  dotenv.config({ path: '.env' });
+}
+
+console.log('NODE_ENV:', process.env.NODE_ENV);
+console.log('PORT:', process.env.PORT);
 
 // Express 앱 초기화
 const app = express();
@@ -47,6 +54,7 @@ const __dirname = dirname(__filename);
 
 // CORS_ORIGIN 환경변수가 비어있는 경우를 대비해 처리
 let allowedOrigins = [
+  //아래 OTA 지우면 안됨(크롬 확장용)
   'https://staysync.me',
   'https://pms.coolstay.co.kr',
   'https://admin.booking.com',
@@ -57,7 +65,6 @@ let allowedOrigins = [
   'https://apps.expediapartnercentral.com',
   'https://ycs.agoda.com',
   'http://localhost:3000',
-  'https://ztoone.co.kr',
   'chrome-extension://cnoicicjafgmfcnjclhlehfpojfaelag',
 ];
 if (process.env.CORS_ORIGIN) {
@@ -97,27 +104,31 @@ const csrfProtection = csurf({
   cookie: {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production', // HTTPS 환경에서는 true로 설정
-    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax', // 개발 환경에서는 'lax'
+    sameSite: 'none',
   },
 });
 
 // CSRF 토큰을 클라이언트에 전달하기 위한 라우트 (CSRF 보호 적용)
-app.get('/csrf-token', csrfProtection, (req, res) => {
+app.get('/api/csrf-token', csrfProtection, (req, res) => {
   res.json({ csrfToken: req.csrfToken() });
 });
 
 // CSRF 보호 미들웨어 적용 (특정 라우트 제외)
 const csrfExcludedRoutes = [
   /^\/auth\/login$/,
+  /^\/login\//,
+  /^\/auth\/logout$/,
+  /^\/logout\//,
   /^\/auth\/register$/,
+  /^\/register\//,
   /^\/auth\/refresh-token$/,
-  /^\/reservations$/, // 추가
-  /^\/reservations\//, 
-  /^\/hotel-settings$/, // 추가
-  /^\/hotel-settings\//, // 호텔 설정의 하위 라우트도 예외로 처리
-  /^\/auth\/refresh-token$/, // 클라이언트쪽에서 Refresh Token 요청 제외
+  /^\/reservations$/,
+  /^\/reservations\//,
+  /^\/hotel-settings$/,
+  /^\/hotel-settings\//,
+  /^\/auth\/refresh-token$/,
   /^\/auth\/reset-password\/.+$/,
-  /^\/csrf-token$/, // 이미 CSRF 보호된 라우트
+  /^\/csrf-token$/,
 ];
 
 // 모든 라우트에 CSRF 보호 미들웨어 적용 (제외된 라우트는 제외)
@@ -210,9 +221,9 @@ const startServer = async () => {
     logger.info('Logs directory created.');
   }
 
-  const PORT = process.env.PORT || 3003;
-  const server = app.listen(PORT, () => {
-    logger.info(`Server started on port ${PORT}`);
+  const server = app.listen(process.env.PORT || 3003, () => {
+    logger.info(`Server started on port ${process.env.PORT || 3003}`);
+    console.log(`Server started on port ${process.env.PORT || 3003}`);
   });
 
   // Graceful Shutdown 설정
