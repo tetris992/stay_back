@@ -5,9 +5,10 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "dev": "nodemon server.js",
-    "start": "NODE_ENV=development node server.js",
-    "queue": "node scrapers/scraperManager.js"
+    "dev": "NODE_ENV=development PORT=3004 nodemon server.js",
+    "start": "NODE_ENV=production node server.js",
+    "queue": "node scrapers/scraperManager.js",
+    "start:local": "NODE_ENV=development PORT=3004 node server.js"
   },
   "keywords": [],
   "author": "",
@@ -41,9 +42,6 @@
     "node-fetch": "^3.3.2",
     "nodemailer": "^6.6.3",
     "nodemon": "^3.1.4",
-    "puppeteer": "^23.9.0",
-    "puppeteer-extra": "^3.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2",
     "string-similarity": "^4.0.4",
     "tough-cookie": "^5.1.1",
     "uid-safe": "^2.1.5",

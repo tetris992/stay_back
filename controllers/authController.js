@@ -1,12 +1,12 @@
 // backend/controllers/authController.js
-
 import jwt from 'jsonwebtoken';
 import User from '../models/User.js';
 import HotelSettings from '../models/HotelSettings.js';
 import RefreshToken from '../models/RefreshToken.js';
 import PasswordResetToken from '../models/PasswordResetToken.js';
+import Reservation from '../models/Reservation.js'; // Reservation 모델 추가
 import logger from '../utils/logger.js';
-import scraperManager from '../scrapers/scraperManager.js';
+// import scraperManager from '../scrapers/scraperManager.js';
 import crypto from 'crypto';
 import sendEmail from '../utils/sendEmail.js';
 import fs from 'fs';
@@ -37,7 +37,21 @@ export const loginUser = async (req, res) => {
 
   try {
     const user = await User.findOne({ hotelId });
-    if (user && (await user.comparePassword(password))) {
+    if (!user) {
+      // 존재하지 않는 사용자면 바로 에러 응답 (새 사용자 생성하지 않음)
+      return res.status(401).json({
+        message: 'Invalid hotel ID or password.',
+        userNotFound: true,
+      });
+    }
+
+    // 사용자 존재 시, 비밀번호 비교
+    if (await user.comparePassword(password)) {
+      // 로그인 성공: 로그인 실패 횟수 초기화
+      user.loginAttempts = 0;
+      user.lastAttemptAt = null;
+      await user.save();
+
       // 호텔 설정 존재 여부 확인
       const hotelSettings = await HotelSettings.findOne({
         hotelId: user.hotelId,
@@ -57,22 +71,40 @@ export const loginUser = async (req, res) => {
         { upsert: true, new: true, setDefaultsOnInsert: true }
       );
 
-      // 리프레시 토큰을 HTTP-only 쿠키로 설정 (보안 강화)
+      // Refresh Token을 HTTP-only 쿠키로 설정
       res.cookie('refreshToken', refreshTokenDoc.token, {
         httpOnly: true,
-        secure: process.env.NODE_ENV === 'production', // HTTPS 환경에서는 true
-        sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax', // 개발 환경에서는 'lax'
-        maxAge: 365 * 24 * 60 * 60 * 1000, // 1년
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+        maxAge: 365 * 24 * 60 * 60 * 1000,
       });
 
-      // 응답 시 필요한 정보만 반환하여 보안 강화
-      res.status(200).json({ accessToken, isRegistered });
+      // 필요한 정보만 응답
+      return res.status(200).json({ accessToken, isRegistered });
     } else {
-      res.status(401).json({ message: 'Invalid hotel ID or password' });
+      // 비밀번호가 틀린 경우, 로그인 실패 횟수 업데이트
+      user.loginAttempts = (user.loginAttempts || 0) + 1;
+      user.lastAttemptAt = new Date();
+      await user.save();
+
+      const remainingAttempts = Math.max(0, 5 - user.loginAttempts);
+      if (remainingAttempts > 0) {
+        return res.status(401).json({
+          message: `Invalid hotel ID or password. Remaining attempts: ${remainingAttempts}`,
+          remainingAttempts,
+        });
+      } else {
+        return res.status(401).json({
+          message:
+            'Maximum login attempts exceeded. Please reset your password.',
+          remainingAttempts: 0,
+          resetRequired: true,
+        });
+      }
     }
   } catch (error) {
     logger.error(`Login error: ${error.message}`, error);
-    res.status(500).json({ message: '서버 오류' });
+    return res.status(500).json({ message: '서버 오류' });
   }
 };
 
@@ -117,85 +149,60 @@ export const refreshAccessToken = async (req, res) => {
 // 로그아웃 함수
 export const logout = async (req, res) => {
   const refreshToken = req.cookies.refreshToken;
-  const hotelId = req.user ? req.user.hotelId : req.body.hotelId; // 인증된 사용자에서 hotelId 추출
+  const hotelId = req.user ? req.user.hotelId : req.body.hotelId;
 
-  if (refreshToken && hotelId) {
-    try {
-      // RefreshToken에서 사용자 제거
-      await RefreshToken.findOneAndDelete({ token: refreshToken });
+  if (!refreshToken || !hotelId) {
+    logger.warn('Missing refreshToken or hotelId', { refreshToken, hotelId });
+    return res.status(400).json({
+      message: '리프레시 토큰 또는 호텔 ID가 필요합니다.',
+      redirect: '/login',
+    });
+  }
 
-      // OTA 상태 비활성화
-      await HotelSettings.findOneAndUpdate(
-        { hotelId },
-        { $set: { 'otas.$[].isActive': false } } // 모든 OTA의 isActive 필드를 false로 설정
-      );
+  try {
+    // Refresh Token 삭제
+    await RefreshToken.findOneAndDelete({ token: refreshToken });
 
-      // 세션이나 인증 정보를 클리어 (Express Session을 사용하는 경우)
-      if (req.session) {
-        req.session.destroy(async (err) => {
-          if (err) {
-            logger.error('Error destroying session:', err);
-            return res.status(500).json({ message: 'Internal Server Error' });
-          }
+    // OTA 상태 비활성화
+    await HotelSettings.findOneAndUpdate(
+      { hotelId },
+      { $set: { 'otas.$[].isActive': false } },
+      { runValidators: true }
+    );
 
-          // 스크래핑 작업 중지
-          try {
-            await scraperManager.stopScraping(hotelId);
-            logger.info(
-              `Scraping stopped for hotelId: ${hotelId} upon logout.`
-            );
-          } catch (scraperError) {
-            logger.error(
-              `Error stopping scraper during logout for hotelId: ${hotelId}`,
-              scraperError
-            );
-            // 사용자에게 알림 (선택 사항)
-          }
+    // 쿠키 삭제
+    res.clearCookie('refreshToken', {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'none',
+    });
 
-          // 큐 초기화
-          scraperManager.clearHotelScheduling(hotelId);
-
-          // 쿠키 삭제
-          res.clearCookie('refreshToken', {
-            httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
-            sameSite: 'none',
-          });
-
-          res.status(200).json({ message: '로그아웃 되었습니다.' });
-        });
-      } else {
-        // 세션을 사용하지 않는 경우
-        // 스크래핑 작업 중지
-        await scraperManager.stopScraping(hotelId).catch((err) => {
-          logger.error(
-            `Failed to stop scraping during logout for hotelId: ${hotelId}`,
-            err
-          );
-        });
-
-        // 쿠키 삭제
-        res.clearCookie('refreshToken', {
-          httpOnly: true,
-          secure: process.env.NODE_ENV === 'production',
-          sameSite: 'none',
-        });
-
-        res.status(200).json({ message: '로그아웃 되었습니다.' });
-      }
-    } catch (error) {
-      logger.error('Logout Error:', error);
-      res.status(500).json({ message: '서버 오류로 로그아웃 실패' });
-    }
-  } else {
-    res.status(400).json({ message: '리프레시 토큰이 존재하지 않습니다.' });
+    logger.info(`Logout successful for hotelId: ${hotelId}`);
+    return res
+      .status(200)
+      .json({ message: '로그아웃 되었습니다.', redirect: '/login' });
+  } catch (error) {
+    logger.error('Logout Error:', {
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      message: '서버 오류로 로그아웃 실패',
+      error: error.message,
+      redirect: '/login',
+    });
   }
 };
-
 export const registerUser = async (req, res) => {
-  // 클라이언트로부터 consentChecked도 받음
-  const { hotelId, hotelName, password, email, address, phoneNumber, consentChecked } =
-    req.body;
+  const {
+    hotelId,
+    hotelName,
+    password,
+    email,
+    address,
+    phoneNumber,
+    consentChecked,
+  } = req.body;
 
   if (
     !hotelId ||
@@ -205,7 +212,7 @@ export const registerUser = async (req, res) => {
     !address ||
     !phoneNumber
   ) {
-    return res.status(400).send({
+    return res.status(400).json({
       message:
         '모든 필수 입력값(호텔 ID, 호텔 이름, 비밀번호, 이메일, 주소, 전화번호)을 입력해주세요.',
     });
@@ -215,14 +222,13 @@ export const registerUser = async (req, res) => {
     const existingUser = await User.findOne({
       $or: [{ hotelId }, { email }, { phoneNumber }],
     });
-
     if (existingUser) {
       let message = '이미 존재하는 사용자입니다.';
       if (existingUser.hotelId === hotelId) message += ' 호텔 ID';
       else if (existingUser.email === email) message += ' 이메일';
       else if (existingUser.phoneNumber === phoneNumber) message += ' 전화번호';
       message += '입니다.';
-      return res.status(409).send({ message });
+      return res.status(409).json({ message });
     }
 
     const newUser = new User({
@@ -232,13 +238,13 @@ export const registerUser = async (req, res) => {
       email,
       address,
       phoneNumber,
-      consentChecked: Boolean(consentChecked), // 동의 여부 저장
-      consentAt: consentChecked ? new Date() : null, // 동의 시 현재 시간을 저장
+      consentChecked: Boolean(consentChecked),
+      consentAt: consentChecked ? new Date() : null,
     });
     await newUser.save();
     logger.info('New user account created:', hotelId);
 
-    res.status(201).send({
+    res.status(201).json({
       message: 'User account registered successfully',
       data: {
         hotelId: newUser.hotelId,
@@ -253,8 +259,13 @@ export const registerUser = async (req, res) => {
       },
     });
   } catch (error) {
-    logger.error('Error registering user:', error);
-    res.status(500).send({ message: '서버 오류가 발생했습니다.' });
+    logger.error('Error registering user:', {
+      message: error.message,
+      stack: error.stack,
+    });
+    res
+      .status(500)
+      .json({ message: '서버 오류가 발생했습니다.', error: error.message });
   }
 };
 
@@ -276,7 +287,7 @@ export const getUserInfo = async (req, res) => {
       data: {
         _id: user._id,
         hotelId: user.hotelId,
-        hotelName: user.hotelName, // 수정된 부분: 호텔 이름 포함
+        hotelName: user.hotelName,
         email: user.email,
         address: user.address,
         phoneNumber: user.phoneNumber,
@@ -295,7 +306,7 @@ export const getUserInfo = async (req, res) => {
 // 사용자 정보 업데이트 함수 추가
 export const updateUser = async (req, res) => {
   const { hotelId } = req.params;
-  const { email, address, phoneNumber, password, hotelName } = req.body; // 수정된 부분: hotelName 추가
+  const { email, address, phoneNumber, password, hotelName } = req.body;
 
   try {
     if (req.user.hotelId !== hotelId) {
@@ -311,7 +322,6 @@ export const updateUser = async (req, res) => {
     if (address) user.address = address;
     if (phoneNumber) user.phoneNumber = phoneNumber;
     if (password) user.password = password;
-    // 수정된 부분: hotelName 업데이트
     if (hotelName) user.hotelName = hotelName;
 
     await user.save();
@@ -321,7 +331,7 @@ export const updateUser = async (req, res) => {
       message: '사용자 정보가 성공적으로 업데이트되었습니다.',
       data: {
         hotelId: user.hotelId,
-        hotelName: user.hotelName, // 수정된 부분: 업데이트된 호텔 이름 포함
+        hotelName: user.hotelName,
         email: user.email,
         address: user.address,
         phoneNumber: user.phoneNumber,
@@ -367,7 +377,7 @@ export const postConsent = async (req, res) => {
     // logs 폴더가 없으면 생성
     const logsDir = path.dirname(logPath);
     if (!fs.existsSync(logsDir)) {
-      fs.mkdirSync(logsDir, { recursive: true }); // 수정된 부분: logPath -> logsDir
+      fs.mkdirSync(logsDir, { recursive: true });
       logger.info('Logs directory created.');
     }
 
@@ -412,40 +422,47 @@ export const getConsentStatus = async (req, res) => {
 
 // 비밀번호 재설정 요청 처리
 export const requestPasswordReset = async (req, res) => {
-  const { email } = req.body;
+  try {
+    const { email } = req.body;
+    // 이메일을 통해 사용자 찾기
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res
+        .status(404)
+        .json({ message: '해당 이메일의 유저를 찾을 수 없습니다.' });
+    }
 
-  // 이메일을 통해 사용자 찾기
-  const user = await User.findOne({ email });
-  if (!user) {
-    return res
-      .status(404)
-      .json({ message: '해당 이메일의 유저를 찾을 수 없습니다.' });
+    // 기존 토큰 삭제
+    await PasswordResetToken.deleteMany({ hotelId: user.hotelId });
+
+    // 토큰 생성 (32바이트의 랜덤 문자열)
+    const token = crypto.randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1시간 후 만료
+
+    await PasswordResetToken.create({
+      hotelId: user.hotelId,
+      token,
+      expiresAt,
+    });
+
+    // FRONTEND_URL 기본값 지정
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    const resetLink = `${frontendUrl}/reset-password/${token}`;
+
+    // 이메일 전송 (text와 html 모두 포함)
+    await sendEmail({
+      to: email,
+      subject: '비밀번호 재설정 안내',
+      text: `아래 링크를 클릭하여 비밀번호를 재설정하세요: ${resetLink}`,
+      html: `<p>아래 링크를 클릭하여 비밀번호를 재설정하세요:</p>
+             <p><a href="${resetLink}">${resetLink}</a></p>`,
+    });
+
+    return res.json({ message: '비밀번호 재설정 이메일을 전송했습니다.' });
+  } catch (error) {
+    logger.error('비밀번호 재설정 요청 에러:', error);
+    return res.status(500).json({ message: '서버 오류가 발생했습니다.' });
   }
-
-  // 기존 토큰이 있으면 삭제
-  await PasswordResetToken.deleteMany({ hotelId: user.hotelId });
-
-  // 토큰 생성
-  const token = crypto.randomBytes(32).toString('hex');
-  const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1시간 후 만료
-
-  await PasswordResetToken.create({
-    hotelId: user.hotelId,
-    token,
-    expiresAt,
-  });
-
-  const resetLink = `${process.env.FRONTEND_URL}/reset-password/${token}`;
-  // FRONTEND_URL은 .env 등에 설정해둔 프론트엔드 주소
-  // 해당 링크를 이메일로 전송
-
-  await sendEmail({
-    to: email,
-    subject: '비밀번호 재설정 안내',
-    text: `아래 링크를 클릭하여 비밀번호를 재설정하세요: ${resetLink}`,
-  });
-
-  return res.json({ message: '비밀번호 재설정 이메일을 전송했습니다.' });
 };
 
 // 실제 비밀번호 재설정 처리
@@ -493,5 +510,110 @@ export const getAuthStatus = async (req, res) => {
       authenticated: false,
       message: '로그인되어 있지 않습니다.',
     });
+  }
+};
+
+// 예약 업데이트 컨트롤러 추가
+export const updateReservation = async (req, res) => {
+  const { reservationId } = req.params;
+  const {
+    customerName,
+    phoneNumber,
+    checkIn,
+    checkOut,
+    reservationDate,
+    roomInfo,
+    price,
+    paymentMethod,
+    specialRequests,
+    roomNumber,
+    siteName,
+  } = req.body;
+  const hotelId = req.user.hotelId;
+
+  try {
+    const reservation = await Reservation.findOneAndUpdate(
+      { _id: reservationId, hotelId }, // hotelId로 권한 확인
+      {
+        customerName, // 수정 가능
+        phoneNumber, // 수정 가능
+        checkIn: new Date(checkIn),
+        checkOut: new Date(checkOut),
+        reservationDate: new Date(reservationDate),
+        roomInfo,
+        price: parseFloat(price),
+        paymentMethod,
+        specialRequests,
+        roomNumber,
+        siteName,
+        updatedAt: new Date(),
+      },
+      { new: true, runValidators: true }
+    );
+
+    if (!reservation) {
+      return res.status(404).json({ message: '예약을 찾을 수 없습니다.' });
+    }
+
+    logger.info(
+      `Reservation ${reservationId} updated successfully for hotelId: ${hotelId}`
+    );
+    res
+      .status(200)
+      .json({ message: '예약이 업데이트되었습니다.', data: reservation });
+  } catch (error) {
+    logger.error('예약 업데이트 실패:', error);
+    res
+      .status(500)
+      .json({ message: '서버 오류가 발생했습니다.', error: error.message });
+  }
+};
+
+// 현장 예약 저장 컨트롤러 추가
+export const saveOnSiteReservation = async (req, res) => {
+  const {
+    customerName,
+    phoneNumber,
+    checkIn,
+    checkOut,
+    reservationDate,
+    roomInfo,
+    price,
+    paymentMethod,
+    specialRequests,
+    roomNumber,
+    siteName,
+  } = req.body;
+  const hotelId = req.user.hotelId;
+
+  try {
+    const reservation = new Reservation({
+      reservationNo: `${Date.now()}`,
+      customerName, // 수정 가능
+      phoneNumber, // 수정 가능
+      checkIn: new Date(checkIn),
+      checkOut: new Date(checkOut),
+      reservationDate: new Date(reservationDate),
+      roomInfo,
+      price: parseFloat(price),
+      paymentMethod,
+      specialRequests,
+      roomNumber,
+      siteName,
+      hotelId,
+    });
+
+    await reservation.save();
+    logger.info(
+      `On-site reservation saved successfully for hotelId: ${hotelId}`
+    );
+    res
+      .status(201)
+      .json({ message: '현장 예약이 저장되었습니다.', data: reservation });
+  } catch (error) {
+    logger.error('현장 예약 저장 실패:', error);
+    res
+      .status(500)
+      .json({ message: '서버 오류가 발생했습니다.', error: error.message });
   }
 };

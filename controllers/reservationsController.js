@@ -8,10 +8,11 @@ import availableOTAs from '../config/otas.js';
 import { parseDate } from '../utils/dateParser.js';
 import { isCancelledStatus } from '../utils/isCancelledStatus.js';
 import { format } from 'date-fns';
+import { 중복검사 } from '../utils/중복검사.js';
 
 // [추가된 부분: 호텔 설정 모델과 알림톡 전송 모듈 추가]
 import HotelSettingsModel from '../models/HotelSettings.js';
-// import { sendReservationConfirmation } from '../utils/sendAlimtalk.js'; 이건 노드.js로 분리
+import { sendReservationConfirmation } from '../utils/sendAlimtalk.js'; //이건 노드.js로 분리
 // 전화번호에서 숫자만 추출하는 헬퍼 함수
 function sanitizePhoneNumber(phoneNumber) {
   if (!phoneNumber) return '';
@@ -152,7 +153,7 @@ export const getReservations = async (req, res) => {
 // 예약 생성 또는 업데이트
 export const createOrUpdateReservations = async (req, res) => {
   const { siteName, reservations, hotelId } = req.body;
-  const finalHotelId = hotelId || req.user.hotelId;
+  const finalHotelId = hotelId || req.user?.hotelId;
 
   if (!siteName || !reservations || !finalHotelId) {
     return res.status(400).send({
@@ -319,7 +320,6 @@ export const createOrUpdateReservations = async (req, res) => {
           // [수정된 부분 4] : 현장예약인 경우 알림톡 전송
           if (siteName === '현장예약') {
             try {
-              // sendReservationConfirmation 함수는 내부에서 User 정보를 조회하므로 hotelId만 전달합니다.
               await sendReservationConfirmation(
                 newReservation.toObject(),
                 finalHotelId
@@ -425,7 +425,7 @@ export const confirmReservation = async (req, res) => {
 // 예약 수정 컨트롤러
 export const updateReservation = async (req, res) => {
   const { reservationId } = req.params;
-  const { hotelId, ...updateData } = req.body;
+  const { hotelId, roomNumber, ...updateData } = req.body;
 
   // 요청 데이터 전체 로그
   console.log('[updateReservation] req.body:', req.body);
@@ -443,53 +443,87 @@ export const updateReservation = async (req, res) => {
       hotelId,
     });
 
-    if (reservation) {
-      // 예) 전화번호, 가격, 날짜 변환 로직 처리
-      if (updateData.phoneNumber) {
-        updateData.phoneNumber = sanitizePhoneNumber(updateData.phoneNumber);
-      }
-      if (updateData.price) {
-        updateData.price = parsePrice(updateData.price);
-      }
-      if (updateData.checkIn) {
-        updateData.checkIn = parseDate(updateData.checkIn);
-      }
-      if (updateData.checkOut) {
-        updateData.checkOut = parseDate(updateData.checkOut);
-      }
-      if (updateData.reservationDate) {
-        updateData.reservationDate = parseDate(updateData.reservationDate);
-      }
-
-      // 업데이트 전 예약 객체 상태
-      console.log(
-        '[updateReservation] Before updating, reservation:',
-        reservation
-      );
-
-      Object.keys(updateData).forEach((key) => {
-        reservation[key] = updateData[key];
-      });
-
-      // 특히 roomNumber가 제대로 설정되었는지 확인
-      console.log(
-        '[updateReservation] After updating fields, roomNumber:',
-        reservation.roomNumber
-      );
-
-      // 결제방법 관련 로직 (생략)
-      await reservation.save();
-      console.log('[updateReservation] After save, reservation:', reservation);
-
-      logger.info(`Updated reservation: ${reservationId}`);
-      res.send(reservation);
-    } else {
-      res
-        .status(404)
-        .send({ message: '해당 ID와 hotelId를 가진 예약을 찾을 수 없습니다.' });
+    if (!reservation) {
+      return res.status(404).send({ message: '예약을 찾을 수 없습니다.' });
     }
+
+    // ✅ 업데이트 전 예약 객체 상태 로그
+    console.log(
+      '[updateReservation] Before updating, reservation:',
+      reservation
+    );
+
+    // 모든 예약 불러오기 (중복 검사를 위한 최소한의 필드만 선택)
+    const allReservations = await Reservation.find(
+      { hotelId, isCancelled: false },
+      'checkIn checkOut roomNumber _id'
+    );
+
+    // 중복 검사 수행
+    const { isConflict, conflictingReservation } = 중복검사(
+      reservation,
+      roomNumber,
+      allReservations
+    );
+
+    if (isConflict) {
+      const conflictCheckIn = format(
+        conflictingReservation.checkIn,
+        'yyyy-MM-dd'
+      );
+      const conflictCheckOut = format(
+        conflictingReservation.checkOut,
+        'yyyy-MM-dd'
+      );
+
+      return res.status(409).send({
+        message:
+          `해당 객실(${roomNumber})은 이미 예약이 존재합니다.\n` +
+          `충돌 예약자: ${conflictingReservation.customerName}\n` +
+          `예약 기간: ${conflictCheckIn} ~ ${conflictCheckOut}`,
+        conflictingReservation,
+      });
+    }
+
+    reservation.roomNumber = roomNumber;
+
+    // 예) 전화번호, 가격, 날짜 변환 로직 처리
+    if (updateData.phoneNumber) {
+      updateData.phoneNumber = sanitizePhoneNumber(updateData.phoneNumber);
+    }
+    if (updateData.price) {
+      updateData.price = parsePrice(updateData.price);
+    }
+    if (updateData.checkIn) {
+      updateData.checkIn = parseDate(updateData.checkIn);
+    }
+    if (updateData.checkOut) {
+      updateData.checkOut = parseDate(updateData.checkOut);
+    }
+    if (updateData.reservationDate) {
+      updateData.reservationDate = parseDate(updateData.reservationDate);
+    }
+
+    Object.keys(updateData).forEach((key) => {
+      reservation[key] = updateData[key];
+    });
+
+    // ✅ 업데이트 후 roomNumber 상태 로그
+    console.log(
+      '[updateReservation] After updating fields, roomNumber:',
+      reservation.roomNumber
+    );
+
+    await reservation.save();
+
+    // ✅ 업데이트 후 예약 객체 상태 로그
+    console.log('[updateReservation] After save, reservation:', reservation);
+
+    logger.info(`Updated reservation: ${reservationId}`);
+
+    res.status(200).send(reservation);
   } catch (error) {
-    logger.error('Error updating reservation:', error);
+    logger.error('예약 수정 중 오류 발생:', error);
     res.status(500).send({ message: '서버 오류가 발생했습니다.' });
   }
 };

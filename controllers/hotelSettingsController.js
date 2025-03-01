@@ -7,6 +7,7 @@ import initializeHotelCollection from '../utils/initializeHotelCollection.js';
 /**
  * GET /hotel-settings
  */
+
 export const getHotelSettings = async (req, res) => {
   const hotelId = req.query.hotelId;
 
@@ -15,9 +16,7 @@ export const getHotelSettings = async (req, res) => {
   }
 
   try {
-    const existing = await HotelSettingsModel.findOne({ hotelId }).select(
-      '-__v'
-    );
+    const existing = await HotelSettingsModel.findOne({ hotelId }).select('-__v');
     if (existing) {
       return res.status(200).json({
         message: '호텔 설정 조회 성공',
@@ -26,8 +25,8 @@ export const getHotelSettings = async (req, res) => {
     } else {
       const newSettings = new HotelSettingsModel({
         hotelId,
-        totalRooms: 0, // 초기값 0으로 설정, 사용자 입력 필요
-        roomTypes: [],
+        totalRooms: defaultRoomTypes.reduce((sum, rt) => sum + rt.stock, 0),
+        roomTypes: defaultRoomTypes, // 디폴트 값 적용
         otas: availableOTAs.map((ota) => ({ name: ota, isActive: false })),
         gridSettings: { floors: [] },
       });
