@@ -1,9 +1,9 @@
-// backend/scrapers/scrapingStatus.js
+// // backend/scrapers/scrapingStatus.js
 
-let isScraping = true;
+// let isScraping = true;
 
-export const getScraping = () => isScraping;
+// export const getScraping = () => isScraping;
 
-export const setScraping = (value) => {
-  isScraping = value;
-};
+// export const setScraping = (value) => {
+//   isScraping = value;
+// };

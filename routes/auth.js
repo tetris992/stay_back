@@ -20,6 +20,11 @@ import { getAuthStatus } from '../controllers/authController.js';
 
 const router = express.Router();
 
+// 토큰 유효성 검증 엔드포인트
+router.get('/validate', protect, (req, res) => {
+  res.status(200).json({ message: 'Token is valid', hotelId: req.user.hotelId });
+});
+
 // POST /auth/consent
 router.post('/consent', protect, asyncHandler(postConsent));
 
