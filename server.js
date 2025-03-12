@@ -14,20 +14,21 @@ import logger from './utils/logger.js';
 import connectDB from './config/db.js';
 import reservationsRoutes from './routes/reservations.js';
 import hotelSettingsRoutes from './routes/hotelSettings.js';
+import dayUseReservationsRoutes from './routes/dayUseReservations.js';
 import authRoutes from './routes/auth.js';
 import ensureConsent from './middleware/consentMiddleware.js';
 import { protect } from './middleware/authMiddleware.js';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
+import reservationsExtensionRoutes from './routes/reservationsExtension.js';
+import { Server } from 'socket.io';
+import jwt from 'jsonwebtoken'; // JWT 검증 추가
 
-// 1) .env 파일 로딩
 dotenv.config();
 
-// 2) NODE_ENV, PORT 등 환경변수를 변수에 할당
 const NODE_ENV = process.env.NODE_ENV || 'development';
-const PORT = process.env.PORT || 3004; // 기본값 3004 (개발용)
+const PORT = process.env.PORT || 3003;
 
-// 디버그용 콘솔 출력
 console.log('Loaded NODE_ENV:', NODE_ENV);
 console.log('PORT from .env:', process.env.PORT || PORT);
 console.log(
@@ -36,20 +37,16 @@ console.log(
 );
 console.log('CORS_ORIGIN from .env:', process.env.CORS_ORIGIN);
 
-// 3) Express 앱 초기화
 const app = express();
 
-// 4) 보안 강화 미들웨어
 app.use(helmet());
 app.use(mongoSanitize());
 app.use(xss());
 app.use(hpp());
 
-// __filename, __dirname 재정의
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// 5) CORS 설정
 const corsOriginsFromEnv = process.env.CORS_ORIGIN
   ? process.env.CORS_ORIGIN.split(',')
   : [];
@@ -58,6 +55,8 @@ const allowedOrigins =
     ? corsOriginsFromEnv
     : [
         'https://staysync.me',
+        'http://localhost:3000',
+        'http://localhost:3003',
         'https://tetris992.github.io',
         'https://pms.coolstay.co.kr',
         'https://admin.booking.com',
@@ -67,7 +66,8 @@ const allowedOrigins =
         'https://expediapartnercentral.com',
         'https://apps.expediapartnercentral.com',
         'https://ycs.agoda.com',
-        'http://localhost:3000',
+        'https://staysync.org',
+        'chrome-extension://bhfggeheelkddgmlegkppgpkmioldfkl',
         'chrome-extension://cnoicicjafgmfcnjclhlehfpojfaelag',
       ];
 console.log('Final CORS_ORIGIN:', allowedOrigins);
@@ -99,7 +99,6 @@ app.use(
 app.use(cookieParser());
 app.use(express.json());
 
-// 6) CSRF 방지 미들웨어
 const csrfProtection = csurf({
   cookie: {
     key: '_csrf',
@@ -110,43 +109,62 @@ const csrfProtection = csurf({
   value: (req) => req.headers['x-csrf-token'] || req.body.csrfToken,
 });
 
-// CSRF 토큰 발급 라우트
 app.get('/api/csrf-token', csrfProtection, (req, res) => {
   res.json({ csrfToken: req.csrfToken() });
 });
 
-app.use(csrfProtection);
+app.use(
+  '/api/reservations',
+  protect,
+  ensureConsent,
+  csrfProtection,
+  reservationsRoutes
+);
 
-// 7) 요청 제한 (Rate Limiter)
+app.use(
+  '/api/dayuse', // 대실 예약 라우트 추가
+  protect,
+  ensureConsent,
+  csrfProtection,
+  dayUseReservationsRoutes
+);
+
+app.use(
+  '/api/reservations-extension',
+  protect,
+  ensureConsent,
+  reservationsExtensionRoutes
+);
+app.use('/api/auth', authRoutes);
+
+app.use(
+  '/api/hotel-settings',
+  protect,
+  ensureConsent,
+  csrfProtection,
+  hotelSettingsRoutes
+);
+
 app.use(
   rateLimit({
-    windowMs: 15 * 60 * 1000, // 15분
+    windowMs: 15 * 60 * 1000,
     max: 1000,
     message: 'Too many requests from this IP, please try again later.',
     standardHeaders: true,
     legacyHeaders: false,
-    handler: (req, res) => {
+    handler: (req, res) =>
       res.status(429).json({
         message: 'You have exceeded the 1000 requests in 15 minutes limit!',
-      });
-    },
+      }),
   })
 );
 
-// 8) MongoDB 연결
 connectDB();
 
-// 9) 루트 라우트
 app.get('/', (req, res) => {
   res.status(200).send('OK - HMS Backend is running');
 });
 
-// 10) API 라우트 설정
-app.use('/api/auth', authRoutes);
-app.use('/api/reservations', protect, ensureConsent, reservationsRoutes);
-app.use('/api/hotel-settings', protect, ensureConsent, hotelSettingsRoutes);
-
-// 11) 에러 처리 미들웨어
 app.use((err, req, res, next) => {
   logger.error(`Unhandled Error: ${err.message}`, err);
   const statusCode = err.statusCode || 500;
@@ -155,21 +173,18 @@ app.use((err, req, res, next) => {
 
   if (err.code === 'EBADCSRFTOKEN') {
     message = 'Invalid CSRF token. Please include a valid token.';
-    return res.status(403).json({
-      message,
-      csrfToken: req.csrfToken ? req.csrfToken() : null,
-    });
+    return res
+      .status(403)
+      .json({ message, csrfToken: req.csrfToken ? req.csrfToken() : null });
   }
 
   const response = {
     message,
     stack: NODE_ENV === 'development' ? err.stack : undefined,
   };
-
   res.status(statusCode).json(response);
 });
 
-// 12) 서버 시작 함수
 const startServer = async () => {
   const logsDir = path.join(__dirname, 'logs');
   if (!fs.existsSync(logsDir)) {
@@ -182,6 +197,86 @@ const startServer = async () => {
     console.log(`Server started on port ${PORT} in ${NODE_ENV} mode`);
   });
 
+  // WebSocket 설정
+  const io = new Server(server, {
+    cors: {
+      origin: allowedOrigins,
+      methods: ['GET', 'POST'],
+      credentials: true,
+    },
+  });
+
+  // WebSocket 인증 로직 (protect 미들웨어 재사용)
+  io.use(async (socket, next) => {
+    const { hotelId, accessToken } = socket.handshake.query;
+    if (!hotelId || !accessToken) {
+      logger.warn(
+        'Missing hotelId or accessToken, disconnecting client:',
+        socket.id
+      );
+      return next(
+        new Error('Authentication error: Missing hotelId or accessToken')
+      );
+    }
+
+    try {
+      // JWT 토큰 검증
+      const decoded = jwt.verify(accessToken, process.env.JWT_SECRET);
+      socket.user = decoded; // 사용자 정보 저장
+      logger.info(
+        `Authenticated WebSocket client: ${socket.id}, userId: ${decoded.id}`
+      );
+      next();
+    } catch (error) {
+      logger.warn(
+        `Invalid access token for client ${socket.id}: ${error.message}`
+      );
+      return next(new Error('Authentication error: Invalid access token'));
+    }
+  });
+
+  io.on('connection', (socket) => {
+    const { hotelId } = socket.handshake.query;
+    logger.info(`New client connected: ${socket.id}, hotelId: ${hotelId}`);
+
+    // 호텔 방에 조인
+    socket.join(hotelId);
+    logger.info(`Client ${socket.id} joined hotel room: ${hotelId}`);
+
+    socket.on('joinHotel', (hotelId) => {
+      socket.join(hotelId);
+      logger.info(`Client ${socket.id} joined hotel room: ${hotelId}`);
+    });
+
+    // 예약 생성 이벤트 (직접 처리 제거, 컨트롤러에서 처리됨)
+    socket.on('createReservation', async (reservationData) => {
+      socket.emit('error', {
+        message: 'Use HTTP endpoint to create reservations',
+      });
+    });
+
+    // 예약 업데이트 이벤트 (직접 처리 제거, 컨트롤러에서 처리됨)
+    socket.on('updateReservation', async ({ reservationId, updatedData }) => {
+      socket.emit('error', {
+        message: 'Use HTTP endpoint to update reservations',
+      });
+    });
+
+    // 예약 삭제 이벤트 (직접 처리 제거, 컨트롤러에서 처리됨)
+    socket.on('deleteReservation', async (reservationId) => {
+      socket.emit('error', {
+        message: 'Use HTTP endpoint to delete reservations',
+      });
+    });
+
+    socket.on('disconnect', () => {
+      logger.info(`Client disconnected: ${socket.id}`);
+    });
+  });
+
+  // io 객체를 app에 저장하여 라우터에서 접근 가능하도록 설정
+  app.set('io', io);
+
   process.on('SIGINT', () => {
     logger.info('Gracefully shutting down server...');
     server.close(() => {
@@ -189,6 +284,7 @@ const startServer = async () => {
       process.exit(0);
     });
   });
+
   process.on('SIGTERM', () => {
     logger.info('Gracefully shutting down server...');
     server.close(() => {

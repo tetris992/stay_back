@@ -26,9 +26,11 @@ export const getHotelSettings = async (req, res) => {
       const newSettings = new HotelSettingsModel({
         hotelId,
         totalRooms: defaultRoomTypes.reduce((sum, rt) => sum + rt.stock, 0),
-        roomTypes: defaultRoomTypes, // 디폴트 값 적용
+        roomTypes: defaultRoomTypes,
         otas: availableOTAs.map((ota) => ({ name: ota, isActive: false })),
         gridSettings: { floors: [] },
+        checkInTime: '16:00', // 디폴트 값
+        checkOutTime: '11:00', // 디폴트 값
       });
       await newSettings.save();
       await initializeHotelCollection(hotelId);
@@ -52,7 +54,7 @@ export const getHotelSettings = async (req, res) => {
  * POST /hotel-settings
  */
 export const registerHotel = async (req, res) => {
-  const { hotelId, totalRooms, roomTypes, otas, gridSettings } = req.body;
+  const { hotelId, totalRooms, roomTypes, otas, gridSettings, checkInTime, checkOutTime } = req.body;
 
   if (!hotelId) {
     return res.status(400).json({ message: 'hotelId는 필수입니다.' });
@@ -72,7 +74,6 @@ export const registerHotel = async (req, res) => {
       Array.isArray(otas) && otas.length > 0
         ? otas
         : availableOTAs.map((ota) => ({ name: ota, isActive: false }));
-
     const finalGridSettings =
       gridSettings &&
       typeof gridSettings === 'object' &&
@@ -86,6 +87,8 @@ export const registerHotel = async (req, res) => {
       roomTypes: finalRoomTypes,
       otas: finalOTAs,
       gridSettings: finalGridSettings,
+      checkInTime: checkInTime || '16:00', // 디폴트 값
+      checkOutTime: checkOutTime || '11:00', // 디폴트 값
     });
 
     await newSettings.save();
@@ -112,8 +115,7 @@ export const registerHotel = async (req, res) => {
  */
 export const updateHotelSettings = async (req, res) => {
   const { hotelId } = req.params;
-  const { totalRooms, roomTypes, otas, gridSettings, otaCredentials } =
-    req.body;
+  const { totalRooms, roomTypes, otas, gridSettings, otaCredentials, checkInTime, checkOutTime } = req.body;
 
   if (!hotelId) {
     return res.status(400).json({ message: 'hotelId는 필수입니다.' });
@@ -137,8 +139,9 @@ export const updateHotelSettings = async (req, res) => {
         floors: Array.isArray(gridSettings.floors) ? gridSettings.floors : [],
       };
     }
-    if (otaCredentials !== undefined)
-      updateData.otaCredentials = otaCredentials;
+    if (otaCredentials !== undefined) updateData.otaCredentials = otaCredentials;
+    if (checkInTime !== undefined) updateData.checkInTime = checkInTime;
+    if (checkOutTime !== undefined) updateData.checkOutTime = checkOutTime;
 
     const updated = await HotelSettingsModel.findOneAndUpdate(
       { hotelId },
