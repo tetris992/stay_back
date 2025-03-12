@@ -1,4 +1,3 @@
-// backend/models/Reservation.js
 import mongoose from 'mongoose';
 
 const ReservationSchema = new mongoose.Schema(
@@ -6,7 +5,6 @@ const ReservationSchema = new mongoose.Schema(
     hotelId: {
       type: String,
       required: true,
-      index: true,
     },
     siteName: {
       type: String,
@@ -31,20 +29,21 @@ const ReservationSchema = new mongoose.Schema(
     },
     roomNumber: {
       type: String,
-      default: '', // <-- 추가: roomNumber 필드
+      default: '',
+      index: true,
     },
     checkIn: {
-      type: Date,
+      type: String, // Date 대신 String으로 변경
       required: true,
     },
     checkOut: {
-      type: Date,
+      type: String, // Date 대신 String으로 변경
       required: true,
     },
     reservationDate: {
-      type: Date,
+      type: String, // Date 대신 String으로 변경
       required: false,
-      default: Date.now,
+      default: () => new Date().toISOString().replace('Z', '+09:00'), // KST 기본값
     },
     reservationStatus: { type: String, required: true, default: 'Confirmed' },
     price: {
@@ -74,7 +73,14 @@ const ReservationSchema = new mongoose.Schema(
     isCancelled: {
       type: Boolean,
       default: false,
+      index: true,
     },
+    // 알림 관련 필드 추가
+    notificationCount: { type: Number, default: 0 }, // 총 알림 전송 횟수
+    lastNotificationReset: { type: Date, default: Date.now }, // 마지막 리셋 날짜
+    sentCreate: { type: Boolean, default: false }, // 생성 알림 전송 여부
+    sentUpdate: { type: Boolean, default: false }, // 변경 알림 전송 여부
+    sentCancel: { type: Boolean, default: false }, // 취소 알림 전송 여부
   },
   {
     timestamps: true,
@@ -82,16 +88,16 @@ const ReservationSchema = new mongoose.Schema(
   }
 );
 
-// 인덱스 추가
-ReservationSchema.index({ customerName: 1, createdAt: -1 });
+// 인덱스 설정
+ReservationSchema.index({ checkIn: 1, checkOut: 1 }); // 날짜 범위 쿼리용
+ReservationSchema.index({ createdAt: -1 }); // 최신 예약 정렬용
+ReservationSchema.index({ customerName: 1, createdAt: -1 }); // 필요 시 유지
 
 const getReservationModel = (hotelId) => {
   const collectionName = `reservation_${hotelId}`;
-
   if (mongoose.models[collectionName]) {
     return mongoose.models[collectionName];
   }
-
   return mongoose.model(collectionName, ReservationSchema, collectionName);
 };
 

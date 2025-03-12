@@ -1,5 +1,3 @@
-// backend/routes/reservations.js
-
 import express from 'express';
 import {
   getReservations,
@@ -7,7 +5,7 @@ import {
   confirmReservation,
   updateReservation,
   deleteReservation,
-  getCanceledReservations, // 추가한 컨트롤러 임포트
+  getCanceledReservations,
 } from '../controllers/reservationsController.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { protect } from '../middleware/authMiddleware.js';
@@ -32,4 +30,5 @@ router.delete('/:reservationId', protect, asyncHandler(deleteReservation));
 // 특정 예약 확정
 router.post('/:reservationId/confirm', protect, asyncHandler(confirmReservation));
 
+// syncReservation 라우트 제거 (WebSocket으로 대체)
 export default router;

@@ -1,4 +1,5 @@
 // backend/models/CanceledReservation.js
+
 import mongoose from 'mongoose';
 
 const CanceledReservationSchema = new mongoose.Schema(
@@ -30,17 +31,17 @@ const CanceledReservationSchema = new mongoose.Schema(
       default: '',
     },
     checkIn: {
-      type: Date,
+      type: String, // Date -> String
       required: true,
     },
     checkOut: {
-      type: Date,
+      type: String, // Date -> String
       required: true,
     },
     reservationDate: {
-      type: Date,
+      type: String, // Date -> String
       required: false,
-      default: Date.now,
+      default: () => format(new Date(), "yyyy-MM-dd'T'HH:mm:ss+09:00"),
     },
     reservationStatus: { type: String, required: true, default: 'Canceled' },
     price: {
@@ -78,21 +79,14 @@ const CanceledReservationSchema = new mongoose.Schema(
   }
 );
 
-// 인덱스 추가
 CanceledReservationSchema.index({ customerName: 1, createdAt: -1 });
 
 const getCanceledReservationModel = (hotelId) => {
   const collectionName = `canceled_reservation_${hotelId}`;
-
   if (mongoose.models[collectionName]) {
     return mongoose.models[collectionName];
   }
-
-  return mongoose.model(
-    collectionName,
-    CanceledReservationSchema,
-    collectionName
-  );
+  return mongoose.model(collectionName, CanceledReservationSchema, collectionName);
 };
 
 export default getCanceledReservationModel;
