@@ -33,15 +33,15 @@ const ReservationSchema = new mongoose.Schema(
       index: true,
     },
     checkIn: {
-      type: String, // Date 대신 String으로 변경
+      type: String, // ISO 8601 문자열 유지
       required: true,
     },
     checkOut: {
-      type: String, // Date 대신 String으로 변경
+      type: String, // ISO 8601 문자열 유지
       required: true,
     },
     reservationDate: {
-      type: String, // Date 대신 String으로 변경
+      type: String,
       required: false,
       default: () => new Date().toISOString().replace('Z', '+09:00'), // KST 기본값
     },
@@ -75,12 +75,22 @@ const ReservationSchema = new mongoose.Schema(
       default: false,
       index: true,
     },
-    // 알림 관련 필드 추가
-    notificationCount: { type: Number, default: 0 }, // 총 알림 전송 횟수
-    lastNotificationReset: { type: Date, default: Date.now }, // 마지막 리셋 날짜
-    sentCreate: { type: Boolean, default: false }, // 생성 알림 전송 여부
-    sentUpdate: { type: Boolean, default: false }, // 변경 알림 전송 여부
-    sentCancel: { type: Boolean, default: false }, // 취소 알림 전송 여부
+    // 추가 필드: 대실과 숙박 구분
+    type: {
+      type: String,
+      enum: ['stay', 'dayUse'],
+      default: 'stay',
+    },
+    duration: {
+      type: Number, // 대실 시간(시간 단위), 대실일 경우에만 사용
+      default: null,
+    },
+    // 새로 추가: 수동 퇴실 상태
+    manuallyCheckedOut: {
+      type: Boolean,
+      default: false,
+      index: true, // 검색 최적화
+    },
   },
   {
     timestamps: true,
@@ -91,7 +101,9 @@ const ReservationSchema = new mongoose.Schema(
 // 인덱스 설정
 ReservationSchema.index({ checkIn: 1, checkOut: 1 }); // 날짜 범위 쿼리용
 ReservationSchema.index({ createdAt: -1 }); // 최신 예약 정렬용
-ReservationSchema.index({ customerName: 1, createdAt: -1 }); // 필요 시 유지
+ReservationSchema.index({ customerName: 1, createdAt: -1 }); // 검색용
+ReservationSchema.index({ type: 1 }); // 대실/숙박 필터링용
+ReservationSchema.index({ manuallyCheckedOut: 1 }); // 퇴실 상태 쿼리용
 
 const getReservationModel = (hotelId) => {
   const collectionName = `reservation_${hotelId}`;

@@ -72,44 +72,6 @@ async function assignRoomNumber(updateData, finalHotelId, Reservation) {
   return '';
 }
 
-const MAX_SENDS_PER_DAY = 3;
-const DAY_IN_MS = 24 * 60 * 60 * 1000;
-
-async function checkAndUpdateSendLimit(reservation, eventType) {
-  const now = new Date();
-  let shouldSend = false;
-
-  if (now - new Date(reservation.lastNotificationReset) > DAY_IN_MS) {
-    reservation.notificationCount = 0;
-    reservation.lastNotificationReset = now;
-    reservation.sentCreate = false;
-    reservation.sentCancel = false;
-  }
-
-  if (reservation.notificationCount < MAX_SENDS_PER_DAY) {
-    if (
-      (eventType === 'create' && !reservation.sentCreate) ||
-      (eventType === 'cancel' && !reservation.sentCancel)
-    ) {
-      shouldSend = true;
-      reservation.notificationCount += 1;
-      if (eventType === 'create') reservation.sentCreate = true;
-      if (eventType === 'cancel') reservation.sentCancel = true;
-    } else {
-      logger.warn(
-        `Notification already sent for ${eventType} on reservation ${reservation._id}`
-      );
-    }
-  } else {
-    logger.warn(
-      `Send limit reached for reservation ${reservation._id}, skipping notification`
-    );
-  }
-
-  await reservation.save();
-  return shouldSend;
-}
-
 export const getReservations = async (req, res) => {
   const { name, hotelId } = req.query;
 
@@ -121,10 +83,7 @@ export const getReservations = async (req, res) => {
 
   try {
     const reservations = await Reservation.find(filter).sort({ createdAt: -1 });
-    const plain = reservations.map((doc) => {
-      const obj = doc.toObject();
-      return obj;
-    });
+    const plain = reservations.map((doc) => doc.toObject());
     res.send(plain);
   } catch (error) {
     logger.error('Error fetching reservations:', error);
@@ -163,7 +122,7 @@ export const createOrUpdateReservations = async (req, res) => {
 
         if (reservation.type === 'dayUse') {
           checkIn = format(now, "yyyy-MM-dd'T'HH:mm:ss+09:00");
-          checkOut = format(addHours(now, 4), "yyyy-MM-dd'T'HH:mm:ss+09:00");
+          checkOut = format(addHours(now, reservation.duration || 4), "yyyy-MM-dd'T'HH:mm:ss+09:00");
         } else {
           checkIn = `${reservation.checkInDate}T${checkInTime}:00+09:00`;
           checkOut = `${reservation.checkOutDate}T${checkOutTime}:00+09:00`;
@@ -175,13 +134,11 @@ export const createOrUpdateReservations = async (req, res) => {
         reservationDate = reservation.reservationDate || format(new Date(), "yyyy-MM-dd'T'HH:mm:ss+09:00");
       }
 
-      // 유효성 검사: 문자열로 비교
       if (!checkIn || !checkOut || checkIn >= checkOut) {
         logger.warn('Skipping reservation with invalid dates', reservation);
         continue;
       }
 
-      // 저장 전 데이터 로그
       logger.debug('Data before save:', { reservationId, checkIn, checkOut });
 
       const paymentMethod = availableOTAs.includes(siteName)
@@ -195,9 +152,9 @@ export const createOrUpdateReservations = async (req, res) => {
         customerName: reservation.customerName,
         phoneNumber: sanitizePhoneNumber(reservation.phoneNumber),
         roomInfo: reservation.roomInfo,
-        checkIn, // KST 문자열
-        checkOut, // KST 문자열
-        reservationDate, // KST 문자열
+        checkIn,
+        checkOut,
+        reservationDate,
         reservationStatus: reservation.reservationStatus || 'Pending',
         price: parsePrice(reservation.price),
         specialRequests: reservation.specialRequests || null,
@@ -206,6 +163,8 @@ export const createOrUpdateReservations = async (req, res) => {
         paymentStatus: reservation.paymentStatus || '확인 필요',
         paymentMethod,
         hotelId: finalHotelId,
+        type: reservation.type || 'stay', // type 추가
+        duration: reservation.type === 'dayUse' ? (reservation.duration || 4) : null, // duration 추가
       };
 
       const cancelled = isCancelledStatus(
@@ -244,20 +203,19 @@ export const createOrUpdateReservations = async (req, res) => {
             });
           }
 
-          if (siteName === '현장예약') {
-            if (await checkAndUpdateSendLimit(newReservation, 'create')) {
-              try {
-                const shortReservationNumber = getShortReservationNumber(newReservation._id);
-                await sendReservationNotification(
-                  newReservation.toObject(),
-                  finalHotelId,
-                  'create',
-                  getShortReservationNumber
-                );
-                logger.info(`알림톡 전송 성공 (생성): ${shortReservationNumber}`);
-              } catch (err) {
-                logger.error(`알림톡 전송 실패 (생성, ID: ${getShortReservationNumber(newReservation._id)}):`, err);
-              }
+          // 숙박 예약 생성 시 알림톡 전송
+          if (siteName === '현장예약' && updateData.type === 'stay') {
+            try {
+              const shortReservationNumber = getShortReservationNumber(newReservation._id);
+              await sendReservationNotification(
+                newReservation.toObject(),
+                finalHotelId,
+                'create',
+                getShortReservationNumber
+              );
+              logger.info(`알림톡 전송 성공 (생성): ${shortReservationNumber}`);
+            } catch (err) {
+              logger.error(`알림톡 전송 실패 (생성, ID: ${getShortReservationNumber(newReservation._id)}):`, err);
             }
           }
         }
@@ -278,23 +236,22 @@ export const createOrUpdateReservations = async (req, res) => {
             req.app.get('io').to(finalHotelId).emit('reservationDeleted', { reservationId });
           }
 
-          if (siteName === '현장예약') {
-            if (await checkAndUpdateSendLimit(existingReservation, 'cancel')) {
-              try {
-                const shortReservationNumber = getShortReservationNumber(existingReservation._id);
-                await sendReservationNotification(
-                  existingReservation.toObject(),
-                  finalHotelId,
-                  'cancel',
-                  getShortReservationNumber
-                );
-                logger.info(`알림톡 전송 성공 (취소): ${shortReservationNumber}`);
-              } catch (err) {
-                logger.error(
-                  `알림톡 전송 실패 (취소, ID: ${getShortReservationNumber(existingReservation._id)}):`,
-                  err
-                );
-              }
+          // 숙박 예약 취소 시 알림톡 전송
+          if (siteName === '현장예약' && existingReservation.type === 'stay') {
+            try {
+              const shortReservationNumber = getShortReservationNumber(existingReservation._id);
+              await sendReservationNotification(
+                existingReservation.toObject(),
+                finalHotelId,
+                'cancel',
+                getShortReservationNumber
+              );
+              logger.info(`알림톡 전송 성공 (취소): ${shortReservationNumber}`);
+            } catch (err) {
+              logger.error(
+                `알림톡 전송 실패 (취소, ID: ${getShortReservationNumber(existingReservation._id)}):`,
+                err
+              );
             }
           }
         } else {
@@ -396,20 +353,19 @@ export const createOrUpdateReservations = async (req, res) => {
             });
           }
 
-          if (siteName === '현장예약') {
-            if (await checkAndUpdateSendLimit(newReservation, 'create')) {
-              try {
-                const shortReservationNumber = getShortReservationNumber(newReservation._id);
-                await sendReservationNotification(
-                  newReservation.toObject(),
-                  finalHotelId,
-                  'create',
-                  getShortReservationNumber
-                );
-                logger.info(`알림톡 전송 성공 (생성): ${shortReservationNumber}`);
-              } catch (err) {
-                logger.error(`알림톡 전송 실패 (생성, ID: ${getShortReservationNumber(newReservation._id)}):`, err);
-              }
+          // 숙박 예약 생성 시 알림톡 전송
+          if (siteName === '현장예약' && updateData.type === 'stay') {
+            try {
+              const shortReservationNumber = getShortReservationNumber(newReservation._id);
+              await sendReservationNotification(
+                newReservation.toObject(),
+                finalHotelId,
+                'create',
+                getShortReservationNumber
+              );
+              logger.info(`알림톡 전송 성공 (생성): ${shortReservationNumber}`);
+            } catch (err) {
+              logger.error(`알림톡 전송 실패 (생성, ID: ${getShortReservationNumber(newReservation._id)}):`, err);
             }
           }
         }
@@ -458,27 +414,22 @@ export const deleteReservation = async (req, res) => {
         .emit('reservationDeleted', { reservationId });
     }
 
-    if (reservation.siteName === '현장예약') {
-      if (await checkAndUpdateSendLimit(reservation, 'cancel')) {
-        try {
-          const shortReservationNumber = getShortReservationNumber(
-            reservation._id
-          );
-          await sendReservationNotification(
-            reservation.toObject(),
-            hotelId,
-            'cancel',
-            getShortReservationNumber
-          );
-          logger.info(`알림톡 전송 성공 (취소): ${shortReservationNumber}`);
-        } catch (err) {
-          logger.error(
-            `알림톡 전송 실패 (취소, ID: ${getShortReservationNumber(
-              reservation._id
-            )}):`,
-            err
-          );
-        }
+    // 숙박 예약 삭제 시 알림톡 전송
+    if (siteName === '현장예약' && reservation.type === 'stay') {
+      try {
+        const shortReservationNumber = getShortReservationNumber(reservation._id);
+        await sendReservationNotification(
+          reservation.toObject(),
+          hotelId,
+          'cancel',
+          getShortReservationNumber
+        );
+        logger.info(`알림톡 전송 성공 (취소): ${shortReservationNumber}`);
+      } catch (err) {
+        logger.error(
+          `알림톡 전송 실패 (취소, ID: ${getShortReservationNumber(reservation._id)}):`,
+          err
+        );
       }
     }
 
@@ -560,10 +511,17 @@ export const updateReservation = async (req, res) => {
         .send({ message: '유효한 객실 번호를 입력하세요.' });
     }
 
-    if (newRoomNumber && newRoomNumber !== reservation.roomNumber) {
+    // 퇴실 처리 체크
+    if (updateData.manuallyCheckedOut === true) {
+      reservation.manuallyCheckedOut = true;
+      // 퇴실 후 방 비우기 (필요 시 roomNumber 초기화)
+      reservation.roomNumber = '';
+      logger.info(`Reservation ${reservationId} marked as manually checked out`);
+    } else if (newRoomNumber && newRoomNumber !== reservation.roomNumber) {
       const allReservations = await Reservation.find({
         hotelId,
         isCancelled: false,
+        manuallyCheckedOut: false, // 퇴실된 예약 제외
       });
       const reservationDataForConflict = {
         ...reservation.toObject(),
