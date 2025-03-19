@@ -201,9 +201,9 @@ export const updateDayUseReservation = async (req, res) => {
       customerName: reservation.customerName || existingReservation.customerName,
       phoneNumber: sanitizePhoneNumber(reservation.phoneNumber) || existingReservation.phoneNumber,
       roomInfo: reservation.roomInfo || existingReservation.roomInfo,
-      checkIn: updatedCheckIn, // 문자열로 유지
-      checkOut: updatedCheckOut, // 문자열로 저장
-      reservationDate: format(now, "yyyy-MM-dd'T'HH:mm:ss+09:00"), // 문자열로 저장
+      checkIn: updatedCheckIn,
+      checkOut: updatedCheckOut,
+      reservationDate: format(now, "yyyy-MM-dd'T'HH:mm:ss+09:00"),
       reservationStatus: reservation.reservationStatus || existingReservation.reservationStatus || 'Pending',
       price: parsePrice(reservation.price) || existingReservation.price,
       specialRequests: reservation.specialRequests || existingReservation.specialRequests || null,
@@ -214,6 +214,9 @@ export const updateDayUseReservation = async (req, res) => {
       hotelId: finalHotelId,
       type: 'dayUse',
       duration: reservation.duration || existingReservation.duration || 4,
+      isCheckedIn: reservation.isCheckedIn ?? existingReservation.isCheckedIn, // 명시적으로 유지
+      isCheckedOut: reservation.isCheckedOut ?? existingReservation.isCheckedOut, // 명시적으로 유지
+      manuallyCheckedOut: reservation.manuallyCheckedOut ?? existingReservation.manuallyCheckedOut, // 명시적으로 유지
     };
 
     const originalRoomNumber = existingReservation.roomNumber;
@@ -236,11 +239,11 @@ export const updateDayUseReservation = async (req, res) => {
       });
     }
 
-    await Reservation.updateOne({ _id: reservationId }, updateData, {
-      runValidators: true,
-      strict: true,
-      overwrite: true,
-    });
+    await Reservation.updateOne(
+      { _id: reservationId },
+      updateData,
+      { runValidators: true, strict: true }
+    );
 
     const updatedReservation = await Reservation.findById(reservationId);
 

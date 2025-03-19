@@ -1,3 +1,5 @@
+// controllers/reservationsController.js
+
 import getReservationModel from '../models/Reservation.js';
 import getCanceledReservationModel from '../models/CanceledReservation.js';
 import logger from '../utils/logger.js';
@@ -58,6 +60,7 @@ async function assignRoomNumber(updateData, finalHotelId, Reservation) {
         { checkIn: { $lt: desiredCheckOut.toISOString() } },
         { checkOut: { $gt: desiredCheckIn.toISOString() } },
       ],
+      manuallyCheckedOut: false,
     });
 
     if (!overlappingReservations.length) return container.roomNumber;
@@ -96,7 +99,9 @@ export const createOrUpdateReservations = async (req, res) => {
   const finalHotelId = hotelId || req.user?.hotelId;
 
   if (!siteName || !reservations || !finalHotelId) {
-    return res.status(400).send({ message: 'siteName, reservations, hotelId 필드는 필수입니다.' });
+    return res
+      .status(400)
+      .send({ message: 'siteName, reservations, hotelId 필드는 필수입니다.' });
   }
 
   try {
@@ -104,25 +109,69 @@ export const createOrUpdateReservations = async (req, res) => {
     const Reservation = getReservationModel(finalHotelId);
     const CanceledReservation = getCanceledReservationModel(finalHotelId);
     const createdReservationIds = [];
-    const hotelSettings = await HotelSettingsModel.findOne({ hotelId: finalHotelId });
+
+    const hotelSettings = await HotelSettingsModel.findOne({
+      hotelId: finalHotelId,
+    });
 
     for (const reservation of reservations) {
       if (!reservation.reservationNo || reservation.reservationNo === 'N/A') {
-        logger.warn('Skipping reservation with invalid reservation number', reservation);
+        logger.warn(
+          'Skipping reservation with invalid reservation number',
+          reservation
+        );
         continue;
       }
 
       const reservationId = `${siteName}-${reservation.reservationNo}`;
       let checkIn, checkOut, reservationDate;
-
       if (siteName === '현장예약') {
         const checkInTime = hotelSettings?.checkInTime || '15:00';
         const checkOutTime = hotelSettings?.checkOutTime || '11:00';
         const now = new Date();
 
         if (reservation.type === 'dayUse') {
-          checkIn = format(now, "yyyy-MM-dd'T'HH:mm:ss+09:00");
-          checkOut = format(addHours(now, reservation.duration || 4), "yyyy-MM-dd'T'HH:mm:ss+09:00");
+          // 프론트엔드에서 전달된 checkIn과 checkOut 사용
+          checkIn = reservation.checkIn;
+          checkOut = reservation.checkOut;
+
+          // checkIn과 checkOut 유효성 검사
+          const checkInDate = new Date(checkIn);
+          const checkOutDate = new Date(checkOut);
+          if (isNaN(checkInDate.getTime()) || isNaN(checkOutDate.getTime())) {
+            logger.warn(
+              'Invalid checkIn or checkOut date for dayUse reservation',
+              reservation
+            );
+            return res
+              .status(400)
+              .send({ message: '유효하지 않은 체크인/체크아웃 날짜입니다.' });
+          }
+
+          // checkIn이 과거 날짜인지 확인
+          const nowStartOfDay = startOfDay(now);
+          if (checkInDate < nowStartOfDay) {
+            logger.warn(
+              'checkIn date is in the past for dayUse reservation',
+              reservation
+            );
+            return res
+              .status(400)
+              .send({ message: '체크인 날짜는 과거일 수 없습니다.' });
+          }
+
+          // checkOut이 checkIn보다 이전인지 확인
+          if (checkOutDate <= checkInDate) {
+            logger.warn(
+              'checkOut date is before checkIn for dayUse reservation',
+              reservation
+            );
+            return res
+              .status(400)
+              .send({
+                message: '체크아웃 날짜는 체크인 날짜보다 이후여야 합니다.',
+              });
+          }
         } else {
           checkIn = `${reservation.checkInDate}T${checkInTime}:00+09:00`;
           checkOut = `${reservation.checkOutDate}T${checkOutTime}:00+09:00`;
@@ -130,8 +179,12 @@ export const createOrUpdateReservations = async (req, res) => {
         reservationDate = format(now, "yyyy-MM-dd'T'HH:mm:ss+09:00");
       } else {
         checkIn = reservation.checkIn;
-        checkOut = reservation.checkOut || `${reservation.checkIn.split(' ')[0]}T11:00:00+09:00`;
-        reservationDate = reservation.reservationDate || format(new Date(), "yyyy-MM-dd'T'HH:mm:ss+09:00");
+        checkOut =
+          reservation.checkOut ||
+          `${reservation.checkIn.split(' ')[0]}T11:00:00+09:00`;
+        reservationDate =
+          reservation.reservationDate ||
+          format(new Date(), "yyyy-MM-dd'T'HH:mm:ss+09:00");
       }
 
       if (!checkIn || !checkOut || checkIn >= checkOut) {
@@ -146,6 +199,13 @@ export const createOrUpdateReservations = async (req, res) => {
         : siteName === '현장예약'
         ? reservation.paymentMethod || 'Pending'
         : reservation.paymentMethod || 'Pending';
+
+      // paymentHistory와 remainingBalance를 reservation 객체에서 가져옴
+      const paymentHistory = reservation.paymentHistory || [];
+      const remainingBalance =
+        reservation.remainingBalance !== undefined
+          ? reservation.remainingBalance
+          : parsePrice(reservation.price);
 
       const updateData = {
         siteName,
@@ -163,8 +223,14 @@ export const createOrUpdateReservations = async (req, res) => {
         paymentStatus: reservation.paymentStatus || '확인 필요',
         paymentMethod,
         hotelId: finalHotelId,
-        type: reservation.type || 'stay', // type 추가
-        duration: reservation.type === 'dayUse' ? (reservation.duration || 4) : null, // duration 추가
+        type: reservation.type || 'stay',
+        duration:
+          reservation.type === 'dayUse' ? reservation.duration || 3 : null,
+        notificationHistory: [],
+        sentCreate: false,
+        sentCancel: false,
+        paymentHistory,
+        remainingBalance,
       };
 
       const cancelled = isCancelledStatus(
@@ -176,7 +242,9 @@ export const createOrUpdateReservations = async (req, res) => {
       updateData.isCancelled = cancelled;
 
       const existingReservation = await Reservation.findById(reservationId);
-      const existingCanceled = await CanceledReservation.findById(reservationId);
+      const existingCanceled = await CanceledReservation.findById(
+        reservationId
+      );
 
       if (existingCanceled) {
         if (cancelled) {
@@ -194,7 +262,9 @@ export const createOrUpdateReservations = async (req, res) => {
             isCancelled: false,
           });
           await newReservation.save();
-          logger.info(`Moved canceled reservation back to normal: ${reservationId}`);
+          logger.info(
+            `Moved canceled reservation back to normal: ${reservationId}`
+          );
           createdReservationIds.push(reservationId);
 
           if (req.app.get('io')) {
@@ -203,10 +273,11 @@ export const createOrUpdateReservations = async (req, res) => {
             });
           }
 
-          // 숙박 예약 생성 시 알림톡 전송
           if (siteName === '현장예약' && updateData.type === 'stay') {
             try {
-              const shortReservationNumber = getShortReservationNumber(newReservation._id);
+              const shortReservationNumber = getShortReservationNumber(
+                newReservation._id
+              );
               await sendReservationNotification(
                 newReservation.toObject(),
                 finalHotelId,
@@ -215,7 +286,12 @@ export const createOrUpdateReservations = async (req, res) => {
               );
               logger.info(`알림톡 전송 성공 (생성): ${shortReservationNumber}`);
             } catch (err) {
-              logger.error(`알림톡 전송 실패 (생성, ID: ${getShortReservationNumber(newReservation._id)}):`, err);
+              logger.error(
+                `알림톡 전송 실패 (생성, ID: ${getShortReservationNumber(
+                  newReservation._id
+                )}):`,
+                err
+              );
             }
           }
         }
@@ -233,13 +309,17 @@ export const createOrUpdateReservations = async (req, res) => {
           logger.info(`Moved reservation to canceled: ${reservationId}`);
 
           if (req.app.get('io')) {
-            req.app.get('io').to(finalHotelId).emit('reservationDeleted', { reservationId });
+            req.app
+              .get('io')
+              .to(finalHotelId)
+              .emit('reservationDeleted', { reservationId });
           }
 
-          // 숙박 예약 취소 시 알림톡 전송
           if (siteName === '현장예약' && existingReservation.type === 'stay') {
             try {
-              const shortReservationNumber = getShortReservationNumber(existingReservation._id);
+              const shortReservationNumber = getShortReservationNumber(
+                existingReservation._id
+              );
               await sendReservationNotification(
                 existingReservation.toObject(),
                 finalHotelId,
@@ -249,7 +329,9 @@ export const createOrUpdateReservations = async (req, res) => {
               logger.info(`알림톡 전송 성공 (취소): ${shortReservationNumber}`);
             } catch (err) {
               logger.error(
-                `알림톡 전송 실패 (취소, ID: ${getShortReservationNumber(existingReservation._id)}):`,
+                `알림톡 전송 실패 (취소, ID: ${getShortReservationNumber(
+                  existingReservation._id
+                )}):`,
                 err
               );
             }
@@ -261,7 +343,7 @@ export const createOrUpdateReservations = async (req, res) => {
             updateData.price = existingReservation.price;
           }
           const allReservations = await Reservation.find({
-            hotelId,
+            hotelId: finalHotelId,
             isCancelled: false,
           });
           const { isConflict, conflictReservation = {} } = checkConflict(
@@ -272,10 +354,16 @@ export const createOrUpdateReservations = async (req, res) => {
           );
           if (isConflict) {
             const conflictCheckIn = conflictReservation.checkIn
-              ? format(new Date(conflictReservation.checkIn), 'yyyy-MM-dd HH:mm')
+              ? format(
+                  new Date(conflictReservation.checkIn),
+                  'yyyy-MM-dd HH:mm'
+                )
               : '정보 없음';
             const conflictCheckOut = conflictReservation.checkOut
-              ? format(new Date(conflictReservation.checkOut), 'yyyy-MM-dd HH:mm')
+              ? format(
+                  new Date(conflictReservation.checkOut),
+                  'yyyy-MM-dd HH:mm'
+                )
               : '정보 없음';
             return res.status(409).send({
               message: `객실 ${
@@ -287,11 +375,11 @@ export const createOrUpdateReservations = async (req, res) => {
             });
           }
 
-          await Reservation.updateOne(
-            { _id: reservationId },
-            updateData,
-            { runValidators: true, strict: true, overwrite: true }
-          );
+          await Reservation.updateOne({ _id: reservationId }, updateData, {
+            runValidators: true,
+            strict: true,
+            overwrite: true,
+          });
           logger.info(`Updated reservation: ${reservationId}`);
 
           const updatedReservation = await Reservation.findById(reservationId);
@@ -311,12 +399,16 @@ export const createOrUpdateReservations = async (req, res) => {
           logger.info(`Created new canceled reservation: ${reservationId}`);
         } else {
           if (!reservation.roomNumber || reservation.roomNumber.trim() === '') {
-            updateData.roomNumber = await assignRoomNumber(updateData, finalHotelId, Reservation);
+            updateData.roomNumber = await assignRoomNumber(
+              updateData,
+              finalHotelId,
+              Reservation
+            );
           } else {
             updateData.roomNumber = reservation.roomNumber;
           }
           const allReservations = await Reservation.find({
-            hotelId,
+            hotelId: finalHotelId,
             isCancelled: false,
           });
           const { isConflict, conflictReservation = {} } = checkConflict(
@@ -326,13 +418,21 @@ export const createOrUpdateReservations = async (req, res) => {
           );
           if (isConflict) {
             const conflictCheckIn = conflictReservation.checkIn
-              ? format(new Date(conflictReservation.checkIn), 'yyyy-MM-dd HH:mm')
+              ? format(
+                  new Date(conflictReservation.checkIn),
+                  'yyyy-MM-dd HH:mm'
+                )
               : '정보 없음';
             const conflictCheckOut = conflictReservation.checkOut
-              ? format(new Date(conflictReservation.checkOut), 'yyyy-MM-dd HH:mm')
+              ? format(
+                  new Date(conflictReservation.checkOut),
+                  'yyyy-MM-dd HH:mm'
+                )
               : '정보 없음';
             return res.status(409).send({
-              message: `객실 ${updateData.roomNumber}은 이미 예약이 존재합니다.\n충돌 예약자: ${
+              message: `객실 ${
+                updateData.roomNumber
+              }은 이미 예약이 존재합니다.\n충돌 예약자: ${
                 conflictReservation.customerName || '정보 없음'
               }\n예약 기간: ${conflictCheckIn} ~ ${conflictCheckOut}`,
               conflictingReservation: conflictReservation,
@@ -353,10 +453,11 @@ export const createOrUpdateReservations = async (req, res) => {
             });
           }
 
-          // 숙박 예약 생성 시 알림톡 전송
           if (siteName === '현장예약' && updateData.type === 'stay') {
             try {
-              const shortReservationNumber = getShortReservationNumber(newReservation._id);
+              const shortReservationNumber = getShortReservationNumber(
+                newReservation._id
+              );
               await sendReservationNotification(
                 newReservation.toObject(),
                 finalHotelId,
@@ -365,7 +466,12 @@ export const createOrUpdateReservations = async (req, res) => {
               );
               logger.info(`알림톡 전송 성공 (생성): ${shortReservationNumber}`);
             } catch (err) {
-              logger.error(`알림톡 전송 실패 (생성, ID: ${getShortReservationNumber(newReservation._id)}):`, err);
+              logger.error(
+                `알림톡 전송 실패 (생성, ID: ${getShortReservationNumber(
+                  newReservation._id
+                )}):`,
+                err
+              );
             }
           }
         }
@@ -414,10 +520,11 @@ export const deleteReservation = async (req, res) => {
         .emit('reservationDeleted', { reservationId });
     }
 
-    // 숙박 예약 삭제 시 알림톡 전송
     if (siteName === '현장예약' && reservation.type === 'stay') {
       try {
-        const shortReservationNumber = getShortReservationNumber(reservation._id);
+        const shortReservationNumber = getShortReservationNumber(
+          reservation._id
+        );
         await sendReservationNotification(
           reservation.toObject(),
           hotelId,
@@ -427,7 +534,9 @@ export const deleteReservation = async (req, res) => {
         logger.info(`알림톡 전송 성공 (취소): ${shortReservationNumber}`);
       } catch (err) {
         logger.error(
-          `알림톡 전송 실패 (취소, ID: ${getShortReservationNumber(reservation._id)}):`,
+          `알림톡 전송 실패 (취소, ID: ${getShortReservationNumber(
+            reservation._id
+          )}):`,
           err
         );
       }
@@ -511,17 +620,17 @@ export const updateReservation = async (req, res) => {
         .send({ message: '유효한 객실 번호를 입력하세요.' });
     }
 
-    // 퇴실 처리 체크
     if (updateData.manuallyCheckedOut === true) {
       reservation.manuallyCheckedOut = true;
-      // 퇴실 후 방 비우기 (필요 시 roomNumber 초기화)
       reservation.roomNumber = '';
-      logger.info(`Reservation ${reservationId} marked as manually checked out`);
+      logger.info(
+        `Reservation ${reservationId} marked as manually checked out`
+      );
     } else if (newRoomNumber && newRoomNumber !== reservation.roomNumber) {
       const allReservations = await Reservation.find({
         hotelId,
         isCancelled: false,
-        manuallyCheckedOut: false, // 퇴실된 예약 제외
+        manuallyCheckedOut: false,
       });
       const reservationDataForConflict = {
         ...reservation.toObject(),
@@ -608,6 +717,132 @@ export const getCanceledReservations = async (req, res) => {
     res.status(200).send(plain);
   } catch (error) {
     logger.error('취소된 예약 가져오는 중 오류 발생:', error);
+    res.status(500).send({ message: '서버 오류가 발생했습니다.' });
+  }
+};
+
+export const payPerNightController = async (req, res) => {
+  const { reservationId } = req.params;
+  const { hotelId, amount, method } = req.body;
+
+  if (!hotelId || !reservationId || !amount) {
+    logger.warn('[payPerNightController] Missing required fields:', {
+      hotelId,
+      reservationId,
+      amount,
+      method,
+    });
+    return res
+      .status(400)
+      .send({ message: 'hotelId, reservationId, amount는 필수입니다.' });
+  }
+
+  try {
+    const Reservation = getReservationModel(hotelId);
+    const reservation = await Reservation.findOne({
+      _id: reservationId,
+      hotelId,
+    });
+
+    if (!reservation) {
+      logger.warn(
+        `[payPerNightController] Reservation not found: ${reservationId}`
+      );
+      return res.status(404).send({ message: '예약을 찾을 수 없습니다.' });
+    }
+
+    if (reservation.type !== 'stay') {
+      logger.warn(
+        `[payPerNightController] Invalid reservation type: ${reservation.type}`
+      );
+      return res
+        .status(400)
+        .send({ message: '연박 예약만 1박씩 결제 가능합니다.' });
+    }
+
+    const checkInDate = new Date(reservation.checkIn);
+    const checkOutDate = new Date(reservation.checkOut);
+    const diffDays = Math.floor(
+      (checkOutDate - checkInDate) / (1000 * 60 * 60 * 24)
+    );
+    if (diffDays <= 1) {
+      logger.warn(`[payPerNightController] Invalid duration: ${diffDays} days`);
+      return res
+        .status(400)
+        .send({ message: '연박 예약만 1박씩 결제 가능합니다.' });
+    }
+
+    const perNightPrice = Math.round(reservation.price / diffDays);
+    const tolerance = 1;
+    if (Math.abs(amount - perNightPrice) > tolerance) {
+      logger.warn(
+        `[payPerNightController] Mismatched amount: ${amount} vs ${perNightPrice}`
+      );
+      return res.status(400).send({
+        message: `결제 금액(${amount})이 1박당 금액(${perNightPrice})과 일치하지 않습니다. (오차 허용 범위: ${tolerance}원)`,
+      });
+    }
+
+    if (amount <= 0) {
+      logger.warn(`[payPerNightController] Invalid amount: ${amount}`);
+      return res
+        .status(400)
+        .send({ message: '결제 금액은 0보다 커야 합니다.' });
+    }
+
+    const now = new Date();
+    const paymentDate = format(now, 'yyyy-MM-dd');
+    const paymentTimestamp = format(now, "yyyy-MM-dd'T'HH:mm:ss+09:00");
+
+    const newPayment = {
+      date: paymentDate,
+      amount: Number(amount),
+      timestamp: paymentTimestamp,
+      method: method || 'Cash',
+    };
+
+    const updatedPaymentHistory = [
+      ...(reservation.paymentHistory || []),
+      newPayment,
+    ];
+    const newRemainingBalance =
+      (reservation.remainingBalance || reservation.price || 0) - amount;
+
+    if (newRemainingBalance < 0) {
+      logger.warn(
+        `[payPerNightController] Negative remaining balance: ${newRemainingBalance}`
+      );
+      return res.status(400).send({ message: '잔액이 음수가 될 수 없습니다.' });
+    }
+
+    reservation.paymentMethod =
+      method || reservation.paymentMethod || 'Pending';
+    reservation.paymentHistory = updatedPaymentHistory;
+    reservation.remainingBalance = newRemainingBalance;
+
+    const savedReservation = await reservation.save();
+
+    if (req.app.get('io')) {
+      req.app.get('io').to(hotelId).emit('reservationUpdated', {
+        reservation: savedReservation.toObject(),
+      });
+    }
+
+    logger.info(
+      `[payPerNightController] Payment processed for reservation ${reservationId}, remainingBalance: ${savedReservation.remainingBalance}`
+    );
+    res.status(200).send({
+      message: '1박 결제가 성공적으로 처리되었습니다.',
+      reservation: savedReservation.toObject(),
+    });
+  } catch (error) {
+    logger.error('[payPerNightController] Error:', error);
+    if (error.name === 'ValidationError') {
+      return res.status(400).send({
+        message: '유효성 검사 오류가 발생했습니다.',
+        details: error.errors,
+      });
+    }
     res.status(500).send({ message: '서버 오류가 발생했습니다.' });
   }
 };
