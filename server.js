@@ -67,8 +67,8 @@ const allowedOrigins =
         'https://apps.expediapartnercentral.com',
         'https://ycs.agoda.com',
         'https://staysync.org',
-        'chrome-extension://bhfggeheelkddgmlegkppgpkmioldfkl',
-        'chrome-extension://cnoicicjafgmfcnjclhlehfpojfaelag',
+        'chrome-extension://gplklapgkbfogdohhjcidcdkbdaolbib',  //개발용
+        'chrome-extension://cnoicicjafgmfcnjclhlehfpojfaelag', //배포용
       ];
 console.log('Final CORS_ORIGIN:', allowedOrigins);
 

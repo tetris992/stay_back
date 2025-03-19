@@ -27,23 +27,27 @@ const ReservationSchema = new mongoose.Schema(
       type: String,
       default: '',
     },
+    originalRoomInfo: { // 원본 roomInfo 저장 필드 추가
+      type: String,
+      default: '',
+    },
     roomNumber: {
       type: String,
       default: '',
       index: true,
     },
     checkIn: {
-      type: String, // ISO 8601 문자열 유지
+      type: String,
       required: true,
     },
     checkOut: {
-      type: String, // ISO 8601 문자열 유지
+      type: String,
       required: true,
     },
     reservationDate: {
       type: String,
       required: false,
-      default: () => new Date().toISOString().replace('Z', '+09:00'), // KST 기본값
+      default: () => new Date().toISOString().replace('Z', '+09:00'),
     },
     reservationStatus: { type: String, required: true, default: 'Confirmed' },
     price: {
@@ -75,21 +79,64 @@ const ReservationSchema = new mongoose.Schema(
       default: false,
       index: true,
     },
-    // 추가 필드: 대실과 숙박 구분
     type: {
       type: String,
       enum: ['stay', 'dayUse'],
       default: 'stay',
     },
     duration: {
-      type: Number, // 대실 시간(시간 단위), 대실일 경우에만 사용
+      type: Number,
       default: null,
     },
-    // 새로 추가: 수동 퇴실 상태
+    isCheckedIn: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    isCheckedOut: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
     manuallyCheckedOut: {
       type: Boolean,
       default: false,
-      index: true, // 검색 최적화
+      index: true,
+    },
+    paymentHistory: {
+      type: [
+        {
+          date: { type: String, required: true },
+          amount: { type: Number, required: true },
+          timestamp: { type: String, required: true },
+          method: { type: String, default: 'Cash' },
+        },
+      ],
+      default: [],
+    },
+    remainingBalance: {
+      type: Number,
+      default: 0,
+      required: true,
+    },
+    notificationHistory: {
+      type: [
+        {
+          type: { type: String, enum: ['create', 'cancel'], required: true },
+          success: { type: Boolean, required: true },
+          timestamp: { type: String, required: true },
+          message: { type: String, required: true },
+        },
+      ],
+      default: [],
+    },
+    sentCreate: {
+      type: Boolean,
+      default: false,
+    },
+    sentCancel: {
+      type: Boolean,
+      default: false,
     },
   },
   {
@@ -98,12 +145,10 @@ const ReservationSchema = new mongoose.Schema(
   }
 );
 
-// 인덱스 설정
-ReservationSchema.index({ checkIn: 1, checkOut: 1 }); // 날짜 범위 쿼리용
-ReservationSchema.index({ createdAt: -1 }); // 최신 예약 정렬용
-ReservationSchema.index({ customerName: 1, createdAt: -1 }); // 검색용
-ReservationSchema.index({ type: 1 }); // 대실/숙박 필터링용
-ReservationSchema.index({ manuallyCheckedOut: 1 }); // 퇴실 상태 쿼리용
+ReservationSchema.index({ checkIn: 1, checkOut: 1 });
+ReservationSchema.index({ createdAt: -1 });
+ReservationSchema.index({ customerName: 1, createdAt: -1 });
+ReservationSchema.index({ type: 1 });
 
 const getReservationModel = (hotelId) => {
   const collectionName = `reservation_${hotelId}`;
