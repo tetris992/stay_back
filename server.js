@@ -16,13 +16,17 @@ import reservationsRoutes from './routes/reservations.js';
 import hotelSettingsRoutes from './routes/hotelSettings.js';
 import dayUseReservationsRoutes from './routes/dayUseReservations.js';
 import authRoutes from './routes/auth.js';
+import customerRoutes from './routes/customer.js'; // 고객 라우트 추가
 import ensureConsent from './middleware/consentMiddleware.js';
-import { protect } from './middleware/authMiddleware.js';
+import { protect } from './middleware/authMiddleware.js'; // protectCustomer 추가
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import reservationsExtensionRoutes from './routes/reservationsExtension.js';
 import { Server } from 'socket.io';
 import jwt from 'jsonwebtoken'; // JWT 검증 추가
+import Customer from './models/Customer.js'; // WebSocket에서 고객 인증을 위해 추가
+import hotelPhotosRoutes from './routes/hotelPhotos.js';
+// import availabilityRoutes from './routes/availability.js';
 
 dotenv.config();
 
@@ -56,7 +60,8 @@ const allowedOrigins =
     : [
         'https://staysync.me',
         'http://localhost:3000',
-        'http://localhost:3003',
+        'http://localhost:3001',
+        'http://localhost:3004',
         'https://tetris992.github.io',
         'https://pms.coolstay.co.kr',
         'https://admin.booking.com',
@@ -67,8 +72,9 @@ const allowedOrigins =
         'https://apps.expediapartnercentral.com',
         'https://ycs.agoda.com',
         'https://staysync.org',
-        'chrome-extension://gplklapgkbfogdohhjcidcdkbdaolbib',  //개발용
+        'chrome-extension://gplklapgkbfogdohhjcidcdkbdaolbib', //개발용
         'chrome-extension://cnoicicjafgmfcnjclhlehfpojfaelag', //배포용
+        'https://danjam.in',
       ];
 console.log('Final CORS_ORIGIN:', allowedOrigins);
 
@@ -145,6 +151,20 @@ app.use(
   hotelSettingsRoutes
 );
 
+// 고객 라우트 추가
+app.use('/api/customer', csrfProtection, customerRoutes);
+
+// 사진 업로드 및 조회 라우트
+app.use(
+  '/api/hotel-settings/photos',
+  protect,
+  ensureConsent,
+  csrfProtection,
+  hotelPhotosRoutes
+);
+// // 재고 조회 라우트 추가
+// app.use('/api/availability', availabilityRoutes);
+
 app.use(
   rateLimit({
     windowMs: 15 * 60 * 1000,
@@ -206,47 +226,91 @@ const startServer = async () => {
     },
   });
 
-  // WebSocket 인증 로직 (protect 미들웨어 재사용)
+  // WebSocket 인증 로직 (호텔 관리자 및 고객 인증 지원)
   io.use(async (socket, next) => {
-    const { hotelId, accessToken } = socket.handshake.query;
-    if (!hotelId || !accessToken) {
-      logger.warn(
-        'Missing hotelId or accessToken, disconnecting client:',
-        socket.id
-      );
-      return next(
-        new Error('Authentication error: Missing hotelId or accessToken')
-      );
+    const { hotelId, accessToken, customerToken } = socket.handshake.query;
+
+    // 고객 인증 (customerToken이 있는 경우)
+    if (customerToken) {
+      try {
+        const decoded = jwt.verify(customerToken, process.env.JWT_SECRET);
+        const customer = await Customer.findById(decoded.id);
+        if (!customer) {
+          logger.warn(
+            `Customer not found for id: ${decoded.id}, client: ${socket.id}`
+          );
+          return next(new Error('Authentication error: Customer not found'));
+        }
+        socket.customer = customer;
+        socket.type = 'customer'; // 클라이언트 타입 설정
+        logger.info(
+          `Authenticated WebSocket customer: ${socket.id}, customerId: ${customer._id}`
+        );
+        return next();
+      } catch (error) {
+        logger.warn(
+          `Invalid customer token for client ${socket.id}: ${error.message}`
+        );
+        return next(new Error('Authentication error: Invalid customer token'));
+      }
     }
 
-    try {
-      // JWT 토큰 검증
-      const decoded = jwt.verify(accessToken, process.env.JWT_SECRET);
-      socket.user = decoded; // 사용자 정보 저장
-      logger.info(
-        `Authenticated WebSocket client: ${socket.id}, userId: ${decoded.id}`
-      );
-      next();
-    } catch (error) {
-      logger.warn(
-        `Invalid access token for client ${socket.id}: ${error.message}`
-      );
-      return next(new Error('Authentication error: Invalid access token'));
+    // 호텔 관리자 인증 (기존 로직)
+    if (hotelId && accessToken) {
+      try {
+        const decoded = jwt.verify(accessToken, process.env.JWT_SECRET);
+        socket.user = decoded;
+        socket.type = 'hotel'; // 클라이언트 타입 설정
+        logger.info(
+          `Authenticated WebSocket client: ${socket.id}, userId: ${decoded.id}`
+        );
+        return next();
+      } catch (error) {
+        logger.warn(
+          `Invalid access token for client ${socket.id}: ${error.message}`
+        );
+        return next(new Error('Authentication error: Invalid access token'));
+      }
     }
+
+    // 인증 정보가 없는 경우
+    logger.warn(
+      'Missing hotelId/accessToken or customerToken, disconnecting client:',
+      socket.id
+    );
+    return next(
+      new Error(
+        'Authentication error: Missing hotelId/accessToken or customerToken'
+      )
+    );
   });
 
   io.on('connection', (socket) => {
     const { hotelId } = socket.handshake.query;
-    logger.info(`New client connected: ${socket.id}, hotelId: ${hotelId}`);
+    logger.info(
+      `New client connected: ${socket.id}, type: ${socket.type}, hotelId: ${hotelId}`
+    );
 
-    // 호텔 방에 조인
-    socket.join(hotelId);
-    logger.info(`Client ${socket.id} joined hotel room: ${hotelId}`);
+    // 호텔 방에 조인 (호텔 관리자 및 고객 모두)
+    if (hotelId) {
+      socket.join(hotelId);
+      logger.info(`Client ${socket.id} joined hotel room: ${hotelId}`);
+    }
 
     socket.on('joinHotel', (hotelId) => {
       socket.join(hotelId);
       logger.info(`Client ${socket.id} joined hotel room: ${hotelId}`);
     });
+
+    // 고객용 이벤트: 예약 상태 변경 알림 구독 추가
+    if (socket.type === 'customer') {
+      socket.on('subscribeToReservationUpdates', (customerId) => {
+        socket.join(`customer_${customerId}`);
+        logger.info(
+          `Client ${socket.id} subscribed to reservation updates for customer: ${customerId}`
+        );
+      });
+    }
 
     // 예약 생성 이벤트 (직접 처리 제거, 컨트롤러에서 처리됨)
     socket.on('createReservation', async (reservationData) => {

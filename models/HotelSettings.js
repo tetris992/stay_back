@@ -86,6 +86,14 @@ const HotelSettingsSchema = new mongoose.Schema(
       type: { floors: { type: [FloorSchema], default: [] } },
       default: () => ({ floors: [] }),
     },
+    checkInTime: {
+      type: String,
+      default: '16:00',
+    },
+    checkOutTime: {
+      type: String,
+      default: '11:00',
+    },
   },
   { timestamps: true }
 );

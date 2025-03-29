@@ -1,3 +1,4 @@
+// controllers/hotelSettings.js
 import HotelSettingsModel from '../models/HotelSettings.js';
 import logger from '../utils/logger.js';
 import { defaultRoomTypes } from '../config/defaultRoomTypes.js';
@@ -7,7 +8,6 @@ import initializeHotelCollection from '../utils/initializeHotelCollection.js';
 /**
  * GET /hotel-settings
  */
-
 export const getHotelSettings = async (req, res) => {
   const hotelId = req.query.hotelId;
 
@@ -29,8 +29,7 @@ export const getHotelSettings = async (req, res) => {
         roomTypes: defaultRoomTypes,
         otas: availableOTAs.map((ota) => ({ name: ota, isActive: false })),
         gridSettings: { floors: [] },
-        checkInTime: '16:00', // 디폴트 값
-        checkOutTime: '11:00', // 디폴트 값
+        // checkInTime과 checkOutTime은 스키마의 기본값 사용
       });
       await newSettings.save();
       await initializeHotelCollection(hotelId);
@@ -87,8 +86,8 @@ export const registerHotel = async (req, res) => {
       roomTypes: finalRoomTypes,
       otas: finalOTAs,
       gridSettings: finalGridSettings,
-      checkInTime: checkInTime || '16:00', // 디폴트 값
-      checkOutTime: checkOutTime || '11:00', // 디폴트 값
+      checkInTime, // 클라이언트에서 전달된 값 사용, 없으면 스키마 기본값
+      checkOutTime, // 클라이언트에서 전달된 값 사용, 없으면 스키마 기본값
     });
 
     await newSettings.save();
@@ -143,6 +142,8 @@ export const updateHotelSettings = async (req, res) => {
     if (checkInTime !== undefined) updateData.checkInTime = checkInTime;
     if (checkOutTime !== undefined) updateData.checkOutTime = checkOutTime;
 
+    logger.info(`[updateHotelSettings] updateData: ${JSON.stringify(updateData)}`);
+
     const updated = await HotelSettingsModel.findOneAndUpdate(
       { hotelId },
       { $set: updateData },
@@ -152,6 +153,8 @@ export const updateHotelSettings = async (req, res) => {
     if (!updated) {
       return res.status(404).json({ message: '해당 호텔 설정이 없습니다.' });
     }
+
+    logger.info(`[updateHotelSettings] Updated document: ${JSON.stringify(updated)}`);
 
     return res.status(200).json({
       message: '호텔 설정이 성공적으로 업데이트되었습니다.',

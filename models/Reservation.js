@@ -1,5 +1,23 @@
 import mongoose from 'mongoose';
 
+const PaymentHistorySchema = new mongoose.Schema({
+  date: { type: String, required: true },
+  amount: { type: Number, required: true, min: 0 },
+  timestamp: { type: String, required: true },
+  method: {
+    type: String,
+    enum: [
+      'Cash',
+      'Card',
+      'Account Transfer',
+      'BankTransfer',
+      'Point',
+      'Pending',
+    ],
+    default: 'Card',
+  },
+});
+
 const ReservationSchema = new mongoose.Schema(
   {
     hotelId: {
@@ -27,7 +45,7 @@ const ReservationSchema = new mongoose.Schema(
       type: String,
       default: '',
     },
-    originalRoomInfo: { // 원본 roomInfo 저장 필드 추가
+    originalRoomInfo: {
       type: String,
       default: '',
     },
@@ -53,6 +71,7 @@ const ReservationSchema = new mongoose.Schema(
     price: {
       type: Number,
       default: 0,
+      min: 0,
     },
     specialRequests: {
       type: String,
@@ -73,6 +92,18 @@ const ReservationSchema = new mongoose.Schema(
     paymentMethod: {
       type: String,
       default: 'Pending',
+      enum: [
+        'Card',
+        'Cash',
+        'Account Transfer',
+        'Pending',
+        'PerNight(Card)',
+        'PerNight(Cash)',
+        'Various',
+        'OTA',
+        '미결제',
+        '현장결제',
+      ],
     },
     isCancelled: {
       type: Boolean,
@@ -104,20 +135,16 @@ const ReservationSchema = new mongoose.Schema(
       index: true,
     },
     paymentHistory: {
-      type: [
-        {
-          date: { type: String, required: true },
-          amount: { type: Number, required: true },
-          timestamp: { type: String, required: true },
-          method: { type: String, default: 'Cash' },
-        },
-      ],
+      type: [PaymentHistorySchema],
       default: [],
     },
     remainingBalance: {
       type: Number,
-      default: 0,
       required: true,
+      min: 0,
+      default: function () {
+        return this.price || 0;
+      },
     },
     notificationHistory: {
       type: [
@@ -145,10 +172,20 @@ const ReservationSchema = new mongoose.Schema(
   }
 );
 
+// 인덱스 추가
 ReservationSchema.index({ checkIn: 1, checkOut: 1 });
 ReservationSchema.index({ createdAt: -1 });
 ReservationSchema.index({ customerName: 1, createdAt: -1 });
 ReservationSchema.index({ type: 1 });
+ReservationSchema.index({ remainingBalance: 1 }); // 부분 결제 관련 조회 최적화
+
+// remainingBalance가 음수가 되지 않도록 검증
+ReservationSchema.pre('save', function (next) {
+  if (this.remainingBalance < 0) {
+    this.remainingBalance = 0;
+  }
+  next();
+});
 
 const getReservationModel = (hotelId) => {
   const collectionName = `reservation_${hotelId}`;

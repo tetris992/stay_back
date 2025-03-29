@@ -4,6 +4,7 @@ import initializeHotelCollection from '../utils/initializeHotelCollection.js';
 import { format, startOfDay, addHours } from 'date-fns';
 import { checkConflict } from '../utils/checkConflict.js'; // 이름 변경
 import HotelSettingsModel from '../models/HotelSettings.js';
+import { assignRoomNumber } from '../utils/roomGridUtils.js';
 
 // 헬퍼 함수
 const sanitizePhoneNumber = (phoneNumber) =>
@@ -14,45 +15,6 @@ const parsePrice = (priceString) => {
   const match = String(priceString).match(/\d[\d,]*/);
   return match ? parseInt(match[0].replace(/,/g, ''), 10) || 0 : 0;
 };
-
-async function assignRoomNumber(updateData, finalHotelId, Reservation) {
-  if (updateData.roomNumber) return updateData.roomNumber;
-
-  const hotelSettings = await HotelSettingsModel.findOne({ hotelId: finalHotelId });
-  if (!hotelSettings?.gridSettings?.containers) {
-    logger.warn('Hotel settings or gridSettings.containers not found.');
-    return '';
-  }
-
-  const containers = hotelSettings.gridSettings.containers.filter(
-    (c) => c.roomInfo.toLowerCase() === updateData.roomInfo.toLowerCase()
-  );
-
-  containers.sort((a, b) =>
-    a.roomNumber.localeCompare(b.roomNumber, undefined, { numeric: true })
-  );
-
-  const desiredCheckIn = new Date(updateData.checkIn + (updateData.checkIn.includes('+') ? '' : '+09:00'));
-  const desiredCheckOut = new Date(updateData.checkOut + (updateData.checkOut.includes('+') ? '' : '+09:00'));
-
-  for (const container of containers) {
-    const overlappingReservations = await Reservation.find({
-      roomNumber: container.roomNumber,
-      isCancelled: false,
-      $or: [
-        { checkIn: { $lt: desiredCheckOut } },
-        { checkOut: { $gt: desiredCheckIn } },
-      ],
-    });
-
-    if (!overlappingReservations.length) return container.roomNumber;
-  }
-
-  logger.warn(
-    `재고 부족: ${updateData.roomInfo} 객실이 ${format(desiredCheckIn, 'yyyy-MM-dd')} ~ ${format(desiredCheckOut, 'yyyy-MM-dd')} 사이에 모두 예약됨.`
-  );
-  return '';
-}
 
 export const createDayUseReservation = async (req, res) => {
   const { siteName, reservation, hotelId } = req.body;

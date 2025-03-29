@@ -1,32 +1,29 @@
 // backend/middleware/authMiddleware.js
-
 import jwt from 'jsonwebtoken';
 import User from '../models/User.js';
+import Customer from '../models/Customer.js';
 import logger from '../utils/logger.js';
 import dotenv from 'dotenv';
 
 dotenv.config();
 
-/**
- * 인증 미들웨어
- * - Authorization 헤더에서 Bearer 토큰을 추출
- * - 토큰을 검증하고, 유효한 경우 req.user에 사용자 정보 설정
- * - 토큰이 없거나 유효하지 않은 경우 401 Unauthorized 응답 반환
- */
 export const protect = async (req, res, next) => {
   let token;
 
-  // Authorization 헤더에서 토큰 추출
   if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
     try {
       token = req.headers.authorization.split(' ')[1];
-
-      // 토큰 검증
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      logger.info(`Decoded token in protect: ${JSON.stringify(decoded)}`);
 
-      // hotelId로 사용자 찾기
+      // hotelId가 있는 경우에만 User 조회
+      if (!decoded.hotelId) {
+        logger.warn('No hotelId in token, likely a customer token');
+        return res.status(401).json({ message: 'Unauthorized, invalid token for hotel admin' });
+      }
+
       req.user = await User.findOne({ hotelId: decoded.hotelId }).select('-password');
-      req.hotelId = decoded.hotelId; // JWT에서 hotelId 설정
+      req.hotelId = decoded.hotelId;
 
       if (!req.user) {
         logger.warn(`User not found for hotelId: ${decoded.hotelId}`);
@@ -44,4 +41,31 @@ export const protect = async (req, res, next) => {
   }
 };
 
+// 고객 인증 미들웨어
+export const protectCustomer = async (req, res, next) => {
+  let token;
 
+  if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+    try {
+      token = req.headers.authorization.split(' ')[1];
+      logger.info(`Received token in protectCustomer: ${token}`);
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      logger.info(`Decoded token in protectCustomer: ${JSON.stringify(decoded)}`);
+
+      req.customer = await Customer.findById(decoded.id).select('-password');
+      if (!req.customer) {
+        logger.warn(`Customer not found for id: ${decoded.id}`);
+        return res.status(401).json({ message: 'Unauthorized, customer not found' });
+      }
+
+      req.isCustomer = true; // 고객 요청임을 표시
+      next();
+    } catch (error) {
+      logger.error(`Customer auth error: ${error.message}`);
+      res.status(401).json({ message: 'Unauthorized, token failed' });
+    }
+  } else {
+    logger.warn('No token provided in Authorization header for customer');
+    res.status(401).json({ message: 'Unauthorized, no token' });
+  }
+};
