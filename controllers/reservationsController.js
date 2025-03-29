@@ -1,5 +1,3 @@
-// controllers/reservationsController.js
-
 import getReservationModel from '../models/Reservation.js';
 import getCanceledReservationModel from '../models/CanceledReservation.js';
 import logger from '../utils/logger.js';
@@ -10,10 +8,12 @@ import { format, startOfDay, addHours } from 'date-fns';
 import { checkConflict } from '../utils/checkConflict.js';
 import HotelSettingsModel from '../models/HotelSettings.js';
 import { sendReservationNotification } from '../utils/sendAlimtalk.js';
+import { assignRoomNumber } from '../utils/roomGridUtils.js';
 
 // 헬퍼 함수
 const sanitizePhoneNumber = (phoneNumber) =>
   phoneNumber ? phoneNumber.replace(/\D/g, '') : '';
+
 const parsePrice = (priceString) => {
   if (priceString == null) return 0;
   if (typeof priceString === 'number') return priceString;
@@ -30,50 +30,61 @@ function getShortReservationNumber(reservationId) {
   return reservationId.slice(0, 13);
 }
 
-async function assignRoomNumber(updateData, finalHotelId, Reservation) {
-  if (updateData.roomNumber) return updateData.roomNumber;
+const processPayment = async (reservation, payments, hotelId, req) => {
+  const totalAmount = payments.reduce(
+    (sum, payment) => sum + payment.amount,
+    0
+  );
 
-  const hotelSettings = await HotelSettingsModel.findOne({
-    hotelId: finalHotelId,
-  });
-  if (!hotelSettings?.gridSettings?.containers) {
-    logger.warn('Hotel settings or gridSettings.containers not found.');
-    return '';
+  if (totalAmount <= 0) {
+    logger.warn(`[processPayment] Invalid total amount: ${totalAmount}`);
+    throw new Error('결제 금액은 0보다 커야 합니다.');
   }
 
-  const containers = hotelSettings.gridSettings.containers.filter(
-    (c) => c.roomInfo.toLowerCase() === updateData.roomInfo.toLowerCase()
-  );
+  const newRemainingBalance =
+    (reservation.remainingBalance || reservation.price || 0) - totalAmount;
 
-  containers.sort((a, b) =>
-    a.roomNumber.localeCompare(b.roomNumber, undefined, { numeric: true })
-  );
+  if (newRemainingBalance < 0) {
+    logger.warn(
+      `[processPayment] Negative remaining balance: ${newRemainingBalance}`
+    );
+    throw new Error('잔액이 음수가 될 수 없습니다.');
+  }
 
-  const desiredCheckIn = new Date(updateData.checkIn);
-  const desiredCheckOut = new Date(updateData.checkOut);
+  const now = new Date();
+  const paymentDate = format(now, 'yyyy-MM-dd');
+  const paymentTimestamp = format(now, "yyyy-MM-dd'T'HH:mm:ss+09:00");
 
-  for (const container of containers) {
-    const overlappingReservations = await Reservation.find({
-      roomNumber: container.roomNumber,
-      isCancelled: false,
-      $or: [
-        { checkIn: { $lt: desiredCheckOut.toISOString() } },
-        { checkOut: { $gt: desiredCheckIn.toISOString() } },
-      ],
-      manuallyCheckedOut: false,
+  const newPayments = payments.map((payment) => ({
+    date: paymentDate,
+    amount: Number(payment.amount),
+    timestamp: paymentTimestamp,
+    method: payment.method || 'Cash',
+  }));
+
+  const updatedPaymentHistory = [
+    ...(reservation.paymentHistory || []),
+    ...newPayments,
+  ];
+  reservation.paymentHistory = updatedPaymentHistory;
+  reservation.remainingBalance = newRemainingBalance;
+
+  // paymentMethod 업데이트 (마지막 결제 방법으로 설정)
+  reservation.paymentMethod =
+    newPayments[newPayments.length - 1].method ||
+    reservation.paymentMethod ||
+    'Pending';
+
+  const savedReservation = await reservation.save();
+
+  if (req.app.get('io')) {
+    req.app.get('io').to(hotelId).emit('reservationUpdated', {
+      reservation: savedReservation.toObject(),
     });
-
-    if (!overlappingReservations.length) return container.roomNumber;
   }
 
-  logger.warn(
-    `재고 부족: ${updateData.roomInfo} 객실이 ${format(
-      desiredCheckIn,
-      'yyyy-MM-dd'
-    )} ~ ${format(desiredCheckOut, 'yyyy-MM-dd')} 사이에 모두 예약됨.`
-  );
-  return '';
-}
+  return savedReservation;
+};
 
 export const getReservations = async (req, res) => {
   const { name, hotelId } = req.query;
@@ -95,13 +106,16 @@ export const getReservations = async (req, res) => {
 };
 
 export const createOrUpdateReservations = async (req, res) => {
-  const { siteName, reservations, hotelId } = req.body;
+  const { siteName, reservations, hotelId, selectedDate } = req.body;
   const finalHotelId = hotelId || req.user?.hotelId;
 
   if (!siteName || !reservations || !finalHotelId) {
     return res
       .status(400)
       .send({ message: 'siteName, reservations, hotelId 필드는 필수입니다.' });
+  }
+  if (!selectedDate) {
+    return res.status(400).send({ message: 'selectedDate는 필수입니다.' });
   }
 
   try {
@@ -131,11 +145,9 @@ export const createOrUpdateReservations = async (req, res) => {
         const now = new Date();
 
         if (reservation.type === 'dayUse') {
-          // 프론트엔드에서 전달된 checkIn과 checkOut 사용
           checkIn = reservation.checkIn;
           checkOut = reservation.checkOut;
 
-          // checkIn과 checkOut 유효성 검사
           const checkInDate = new Date(checkIn);
           const checkOutDate = new Date(checkOut);
           if (isNaN(checkInDate.getTime()) || isNaN(checkOutDate.getTime())) {
@@ -148,7 +160,6 @@ export const createOrUpdateReservations = async (req, res) => {
               .send({ message: '유효하지 않은 체크인/체크아웃 날짜입니다.' });
           }
 
-          // checkIn이 과거 날짜인지 확인
           const nowStartOfDay = startOfDay(now);
           if (checkInDate < nowStartOfDay) {
             logger.warn(
@@ -160,17 +171,14 @@ export const createOrUpdateReservations = async (req, res) => {
               .send({ message: '체크인 날짜는 과거일 수 없습니다.' });
           }
 
-          // checkOut이 checkIn보다 이전인지 확인
           if (checkOutDate <= checkInDate) {
             logger.warn(
               'checkOut date is before checkIn for dayUse reservation',
               reservation
             );
-            return res
-              .status(400)
-              .send({
-                message: '체크아웃 날짜는 체크인 날짜보다 이후여야 합니다.',
-              });
+            return res.status(400).send({
+              message: '체크아웃 날짜는 체크인 날짜보다 이후여야 합니다.',
+            });
           }
         } else {
           checkIn = `${reservation.checkInDate}T${checkInTime}:00+09:00`;
@@ -197,10 +205,9 @@ export const createOrUpdateReservations = async (req, res) => {
       const paymentMethod = availableOTAs.includes(siteName)
         ? reservation.paymentMethod?.trim() || 'OTA'
         : siteName === '현장예약'
-        ? reservation.paymentMethod || 'Pending'
-        : reservation.paymentMethod || 'Pending';
+        ? reservation.paymentMethod || 'OTA'
+        : reservation.paymentMethod || 'OTA';
 
-      // paymentHistory와 remainingBalance를 reservation 객체에서 가져옴
       const paymentHistory = reservation.paymentHistory || [];
       const remainingBalance =
         reservation.remainingBalance !== undefined
@@ -350,7 +357,7 @@ export const createOrUpdateReservations = async (req, res) => {
             { ...updateData, _id: reservationId },
             updateData.roomNumber || existingReservation.roomNumber,
             allReservations,
-            reservationId
+            new Date(selectedDate)
           );
           if (isConflict) {
             const conflictCheckIn = conflictReservation.checkIn
@@ -414,7 +421,8 @@ export const createOrUpdateReservations = async (req, res) => {
           const { isConflict, conflictReservation = {} } = checkConflict(
             { ...updateData, _id: reservationId },
             updateData.roomNumber,
-            allReservations
+            allReservations,
+            new Date(selectedDate)
           );
           if (isConflict) {
             const conflictCheckIn = conflictReservation.checkIn
@@ -594,12 +602,17 @@ export const confirmReservation = async (req, res) => {
 
 export const updateReservation = async (req, res) => {
   const { reservationId } = req.params;
-  const { hotelId, roomNumber, ...updateData } = req.body;
+  const { hotelId, roomNumber, selectedDate, ...updateData } = req.body;
 
-  if (!hotelId)
+  if (!hotelId) {
     return res.status(400).send({ message: 'hotelId는 필수입니다.' });
-  if (!reservationId)
+  }
+  if (!reservationId) {
     return res.status(400).send({ message: 'reservationId는 필수입니다.' });
+  }
+  if (!selectedDate) {
+    return res.status(400).send({ message: 'selectedDate는 필수입니다.' });
+  }
 
   try {
     const Reservation = getReservationModel(hotelId);
@@ -608,8 +621,9 @@ export const updateReservation = async (req, res) => {
       hotelId,
     });
 
-    if (!reservation)
+    if (!reservation) {
       return res.status(404).send({ message: '예약을 찾을 수 없습니다.' });
+    }
 
     const originalRoomNumber = reservation.roomNumber;
     const newRoomNumber = roomNumber || updateData.roomNumber;
@@ -642,7 +656,7 @@ export const updateReservation = async (req, res) => {
         reservationDataForConflict,
         newRoomNumber,
         allReservations,
-        reservationId
+        new Date(selectedDate)
       );
 
       if (isConflict) {
@@ -721,12 +735,13 @@ export const getCanceledReservations = async (req, res) => {
   }
 };
 
-export const payPerNightController = async (req, res) => {
+// 1박씩 결제 처리
+export const payPerNight = async (req, res) => {
   const { reservationId } = req.params;
   const { hotelId, amount, method } = req.body;
 
   if (!hotelId || !reservationId || !amount) {
-    logger.warn('[payPerNightController] Missing required fields:', {
+    logger.warn('[payPerNight] Missing required fields:', {
       hotelId,
       reservationId,
       amount,
@@ -745,15 +760,13 @@ export const payPerNightController = async (req, res) => {
     });
 
     if (!reservation) {
-      logger.warn(
-        `[payPerNightController] Reservation not found: ${reservationId}`
-      );
+      logger.warn(`[payPerNight] Reservation not found: ${reservationId}`);
       return res.status(404).send({ message: '예약을 찾을 수 없습니다.' });
     }
 
     if (reservation.type !== 'stay') {
       logger.warn(
-        `[payPerNightController] Invalid reservation type: ${reservation.type}`
+        `[payPerNight] Invalid reservation type: ${reservation.type}`
       );
       return res
         .status(400)
@@ -766,7 +779,7 @@ export const payPerNightController = async (req, res) => {
       (checkOutDate - checkInDate) / (1000 * 60 * 60 * 24)
     );
     if (diffDays <= 1) {
-      logger.warn(`[payPerNightController] Invalid duration: ${diffDays} days`);
+      logger.warn(`[payPerNight] Invalid duration: ${diffDays} days`);
       return res
         .status(400)
         .send({ message: '연박 예약만 1박씩 결제 가능합니다.' });
@@ -776,73 +789,101 @@ export const payPerNightController = async (req, res) => {
     const tolerance = 1;
     if (Math.abs(amount - perNightPrice) > tolerance) {
       logger.warn(
-        `[payPerNightController] Mismatched amount: ${amount} vs ${perNightPrice}`
+        `[payPerNight] Mismatched amount: ${amount} vs ${perNightPrice}`
       );
       return res.status(400).send({
         message: `결제 금액(${amount})이 1박당 금액(${perNightPrice})과 일치하지 않습니다. (오차 허용 범위: ${tolerance}원)`,
       });
     }
 
-    if (amount <= 0) {
-      logger.warn(`[payPerNightController] Invalid amount: ${amount}`);
-      return res
-        .status(400)
-        .send({ message: '결제 금액은 0보다 커야 합니다.' });
-    }
-
-    const now = new Date();
-    const paymentDate = format(now, 'yyyy-MM-dd');
-    const paymentTimestamp = format(now, "yyyy-MM-dd'T'HH:mm:ss+09:00");
-
-    const newPayment = {
-      date: paymentDate,
-      amount: Number(amount),
-      timestamp: paymentTimestamp,
-      method: method || 'Cash',
-    };
-
-    const updatedPaymentHistory = [
-      ...(reservation.paymentHistory || []),
-      newPayment,
-    ];
-    const newRemainingBalance =
-      (reservation.remainingBalance || reservation.price || 0) - amount;
-
-    if (newRemainingBalance < 0) {
-      logger.warn(
-        `[payPerNightController] Negative remaining balance: ${newRemainingBalance}`
-      );
-      return res.status(400).send({ message: '잔액이 음수가 될 수 없습니다.' });
-    }
-
-    reservation.paymentMethod =
-      method || reservation.paymentMethod || 'Pending';
-    reservation.paymentHistory = updatedPaymentHistory;
-    reservation.remainingBalance = newRemainingBalance;
-
-    const savedReservation = await reservation.save();
-
-    if (req.app.get('io')) {
-      req.app.get('io').to(hotelId).emit('reservationUpdated', {
-        reservation: savedReservation.toObject(),
-      });
-    }
+    const payments = [{ amount: Number(amount), method: method || 'Cash' }];
+    const savedReservation = await processPayment(
+      reservation,
+      payments,
+      hotelId,
+      req
+    );
 
     logger.info(
-      `[payPerNightController] Payment processed for reservation ${reservationId}, remainingBalance: ${savedReservation.remainingBalance}`
+      `[payPerNight] Payment processed for reservation ${reservationId}, remainingBalance: ${savedReservation.remainingBalance}`
     );
     res.status(200).send({
       message: '1박 결제가 성공적으로 처리되었습니다.',
       reservation: savedReservation.toObject(),
     });
   } catch (error) {
-    logger.error('[payPerNightController] Error:', error);
+    logger.error('[payPerNight] Error:', error);
     if (error.name === 'ValidationError') {
       return res.status(400).send({
         message: '유효성 검사 오류가 발생했습니다.',
         details: error.errors,
       });
     }
-    res.status(500).send({ message: '서버 오류가 발생했습니다.' });
+    res.status(error.message ? 400 : 500).send({
+      message: error.message || '서버 오류가 발생했습니다.',
+    });
+  }
+};
+
+// 부분 결제 처리
+export const payPartial = async (req, res) => {
+  const { reservationId } = req.params;
+  const { hotelId, payments } = req.body;
+
+  if (!hotelId || !reservationId || !payments) {
+    logger.warn('[payPartial] Missing required fields:', {
+      hotelId,
+      reservationId,
+      payments,
+    });
+    return res
+      .status(400)
+      .send({ message: 'hotelId, reservationId, payments는 필수입니다.' });
+  }
+
+  if (!Array.isArray(payments) || payments.length === 0) {
+    logger.warn('[payPartial] Invalid payments array:', payments);
+    return res
+      .status(400)
+      .send({ message: '결제 항목이 비어있거나 유효하지 않습니다.' });
+  }
+
+  try {
+    const Reservation = getReservationModel(hotelId);
+    const reservation = await Reservation.findOne({
+      _id: reservationId,
+      hotelId,
+    });
+
+    if (!reservation) {
+      logger.warn(`[payPartial] Reservation not found: ${reservationId}`);
+      return res.status(404).send({ message: '예약을 찾을 수 없습니다.' });
+    }
+
+    const savedReservation = await processPayment(
+      reservation,
+      payments,
+      hotelId,
+      req
+    );
+
+    logger.info(
+      `[payPartial] Payment processed for reservation ${reservationId}, remainingBalance: ${savedReservation.remainingBalance}`
+    );
+    res.status(200).send({
+      message: '부분 결제가 성공적으로 처리되었습니다.',
+      reservation: savedReservation.toObject(),
+    });
+  } catch (error) {
+    logger.error('[payPartial] Error:', error);
+    if (error.name === 'ValidationError') {
+      return res.status(400).send({
+        message: '유효성 검사 오류가 발생했습니다.',
+        details: error.errors,
+      });
+    }
+    res.status(error.message ? 400 : 500).send({
+      message: error.message || '서버 오류가 발생했습니다.',
+    });
   }
 };

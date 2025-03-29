@@ -1,5 +1,4 @@
 // backend/routes/auth.js
-
 import express from 'express';
 import {
   loginUser,
@@ -8,21 +7,24 @@ import {
   registerUser,
   getUserInfo,
   updateUser,
-  postConsent, // 개인정보 동의 컨트롤러 추가
-  getConsentStatus, // 개인정보 동의 상태 조회 컨트롤러 추가
-  requestPasswordReset, // 비밀번호 재설정 요청 컨트롤러
-  resetPasswordController, // 비밀번호 재설정 컨트롤러
+  postConsent,
+  getConsentStatus,
+  requestPasswordReset,
+  resetPasswordController,
 } from '../controllers/authController.js';
 import asyncHandler from '../utils/asyncHandler.js';
-import logger from '../utils/logger.js'; // logger 추가
+import logger from '../utils/logger.js';
 import { protect } from '../middleware/authMiddleware.js';
 import { getAuthStatus } from '../controllers/authController.js';
+import HotelSettingsModel from '../models/HotelSettings.js';
 
 const router = express.Router();
 
 // 토큰 유효성 검증 엔드포인트
 router.get('/validate', protect, (req, res) => {
-  res.status(200).json({ message: 'Token is valid', hotelId: req.user.hotelId });
+  res
+    .status(200)
+    .json({ message: 'Token is valid', hotelId: req.user.hotelId });
 });
 
 // POST /auth/consent
@@ -55,7 +57,7 @@ router.post(
 // 로그아웃 라우트 (보호 미들웨어 적용 시)
 router.post(
   '/logout',
-  protect, // 인증된 사용자만 접근 가능 (필요 시)
+  protect,
   asyncHandler(async (req, res, next) => {
     logger.info('Logout route hit');
     await logout(req, res);
@@ -91,6 +93,7 @@ router.patch(
   })
 );
 
+// 비밀번호 재설정 요청 라우트
 router.post(
   '/reset-password-request',
   asyncHandler(async (req, res) => {
@@ -99,11 +102,36 @@ router.post(
   })
 );
 
+// 비밀번호 재설정 라우트
 router.post(
   '/reset-password/:token',
   asyncHandler(async (req, res) => {
     logger.info('Reset Password route hit');
     await resetPasswordController(req, res);
+  })
+);
+
+// 사진 업로드 페이지 진입 시 비밀번호 인증 라우트
+router.post(
+  '/validate-upload-password',
+  protect,
+  asyncHandler(async (req, res) => {
+    const { hotelId, password } = req.body;
+
+    if (!hotelId || !password) {
+      return res
+        .status(400)
+        .json({ message: 'hotelId와 password는 필수입니다.' });
+    }
+
+    const hotelSettings = await HotelSettingsModel.findOne({ hotelId });
+    if (!hotelSettings) {
+      return res.status(404).json({ message: '호텔 설정을 찾을 수 없습니다.' });
+    }
+
+    // 비밀번호 비교 (실제로는 암호화된 비밀번호를 비교해야 함, 예: bcrypt)
+    const isValid = password === hotelSettings.adminPassword; // 임시로 평문 비교
+    res.status(200).json({ valid: isValid });
   })
 );
 
