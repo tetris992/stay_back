@@ -469,6 +469,7 @@ export const createReservation = async (req, res) => {
     const customer = req.customer;
     const { hotelId, roomInfo, checkIn, checkOut, price, specialRequests } = req.body;
 
+    // 필수 필드 검증
     if (!hotelId || !roomInfo || !checkIn || !checkOut || !price) {
       logger.warn(
         `[createReservation] Missing fields: hotelId=${hotelId}, roomInfo=${roomInfo}, checkIn=${checkIn}, checkOut=${checkOut}, price=${price}`
@@ -476,12 +477,12 @@ export const createReservation = async (req, res) => {
       return res.status(400).json({ message: '모든 필드는 필수입니다.' });
     }
 
+    // 호텔 설정 및 객실 타입 확인
     const hotelSettings = await HotelSettingsModel.findOne({ hotelId });
     if (!hotelSettings) {
       logger.warn(`[createReservation] Hotel settings not found for hotelId=${hotelId}`);
       return res.status(404).json({ message: '호텔 설정 정보를 찾을 수 없습니다.' });
     }
-
     const requestedRoomType = hotelSettings.roomTypes.find(
       (rt) => rt.roomInfo === roomInfo
     );
@@ -490,31 +491,40 @@ export const createReservation = async (req, res) => {
       return res.status(400).json({ message: '유효하지 않은 객실 타입입니다.' });
     }
 
-    if (parseFloat(price) !== requestedRoomType.price) {
+    // 숙박일수 계산: 체크아웃과 체크인 날짜 차이 (1박 예약이면 차이가 1)
+    const checkInDate = startOfDay(new Date(checkIn));
+    const checkOutDate = startOfDay(new Date(checkOut));
+    const numDays = differenceInCalendarDays(checkOutDate, checkInDate);
+    if (numDays <= 0) {
+      logger.warn(`[createReservation] Invalid date range: checkIn=${checkIn}, checkOut=${checkOut}`);
+      return res.status(400).json({ message: '체크아웃 날짜는 체크인 날짜 이후여야 합니다.' });
+    }
+
+    // 총 가격 검증: 객실 1박 가격 × 숙박일수 (소수점 오차 허용 1원)
+    const expectedTotalPrice = requestedRoomType.price * numDays;
+    const tolerance = 1;
+    if (Math.abs(parseFloat(price) - expectedTotalPrice) > tolerance) {
       logger.warn(
-        `[createReservation] Price mismatch: requested=${price}, expected=${requestedRoomType.price}`
+        `[createReservation] Price mismatch: requested=${price}, expected=${expectedTotalPrice}, roomPrice=${requestedRoomType.price}, numDays=${numDays}`
       );
       return res.status(400).json({
-        message: '요청된 가격이 호텔 설정과 일치하지 않습니다.',
+        message: `요청된 총 가격(${price}원)이 예상 총 가격(${expectedTotalPrice}원)과 일치하지 않습니다. (1박당 ${requestedRoomType.price}원 x ${numDays}박)`,
       });
     }
 
+    // 예약 가능 여부 확인 (calculateRoomAvailability 사용)
     const Reservation = getReservationModel(hotelId);
-    const reservations = await Reservation.find({ hotelId, isCancelled: false });
+    const existingReservations = await Reservation.find({ hotelId, isCancelled: false });
     const availabilityByDate = calculateRoomAvailability(
-      reservations,
+      existingReservations,
       hotelSettings.roomTypes,
       checkIn,
       checkOut,
       hotelSettings.gridSettings
     );
-
     const typeKey = roomInfo.toLowerCase();
-    const checkInDate = startOfDay(new Date(checkIn));
-    const checkOutDate = startOfDay(new Date(checkOut));
-    const numDays = differenceInCalendarDays(checkOutDate, checkInDate);
     let minAvailableRooms = requestedRoomType.stock || 0;
-
+    // 예약 기간 동안의 남은 객실 수 확인
     for (let i = 0; i < numDays; i++) {
       const ds = format(addDays(checkInDate, i), 'yyyy-MM-dd');
       const dailyData = availabilityByDate[ds]?.[typeKey] || {
@@ -524,13 +534,12 @@ export const createReservation = async (req, res) => {
     }
     if (minAvailableRooms <= 0) {
       logger.warn(
-        `[createReservation] No available rooms: hotelId=${hotelId}, roomInfo=${roomInfo}`
+        `[createReservation] No available rooms: hotelId=${hotelId}, roomInfo=${roomInfo}, minAvailableRooms=${minAvailableRooms}`
       );
-      return res
-        .status(409)
-        .json({ message: '해당 기간에 이용 가능한 객실이 없습니다.' });
+      return res.status(409).json({ message: '해당 기간에 이용 가능한 객실이 없습니다.' });
     }
 
+    // 예약 생성
     const reservationId = `WEB-${uuidv4()}`;
     const newData = {
       _id: reservationId,
@@ -544,7 +553,8 @@ export const createReservation = async (req, res) => {
       checkOut,
       reservationDate: new Date().toISOString().replace('Z', '+09:00'),
       reservationStatus: 'Confirmed',
-      price: parseFloat(price),
+      price: parseFloat(price), // 총 가격
+      numDays, // 숙박일수 추가
       specialRequests: specialRequests || '',
       paymentMethod: '현장결제',
       isCancelled: false,
@@ -558,6 +568,7 @@ export const createReservation = async (req, res) => {
     const newReservation = new Reservation(newData);
     await newReservation.save();
 
+    // 고객 예약 정보 업데이트
     await Customer.findByIdAndUpdate(
       customer._id,
       {
@@ -567,6 +578,7 @@ export const createReservation = async (req, res) => {
       { new: true }
     );
 
+    // 웹소켓을 통한 실시간 업데이트
     if (req.app.get('io')) {
       req.app.get('io').to(hotelId).emit('reservationCreated', {
         reservation: newReservation.toObject(),
@@ -592,20 +604,19 @@ export const createReservation = async (req, res) => {
       logger.error(`알림톡 전송 실패 (생성, ID: ${reservationId}):`, err);
     }
 
-    logger.info(`[createReservation] Created reservation: ${reservationId}`);
+    logger.info(`[createReservation] Created reservation: ${reservationId}, customer: ${customer.email}`);
     return res.status(201).json({
       reservationId,
       hotelId,
       roomInfo,
       checkIn,
       checkOut,
-      price,
+      price: parseFloat(price),
+      numDays,
     });
   } catch (error) {
-    logger.error(`[createReservation] Error: ${error.message}`, error);
-    return res
-      .status(500)
-      .json({ message: '서버 오류가 발생했습니다.', error: error.message });
+    logger.error(`[createReservation] Error: ${error.message}, customer: ${req.customer?.email || 'unknown'}`, error);
+    return res.status(500).json({ message: '서버 오류가 발생했습니다.', error: error.message });
   }
 };
 
