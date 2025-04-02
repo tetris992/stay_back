@@ -248,10 +248,11 @@ app.use(
   '/api/reservations-extension',
   protect,
   ensureConsent,
-  verifyCsrfToken,
   reservationsExtensionRoutes
 );
+
 app.use('/api/auth', authRoutes);
+
 app.use(
   '/api/hotel-settings',
   protect,
@@ -259,7 +260,9 @@ app.use(
   verifyCsrfToken,
   hotelSettingsRoutes
 );
+
 app.use('/api/customer', verifyCsrfToken, customerRoutes);
+
 app.use(
   '/api/hotel-settings/photos',
   protect,
