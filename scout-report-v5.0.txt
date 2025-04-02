@@ -1,0 +1,10 @@
+
+
+  Target     │  staysync992/hms-backend:v5.0  │    0C     7H     2M    92L     2?   
+    digest   │  57883a1360f0                  │                                     
+  Base image │  node:20-bookworm-slim         │    0C     1H     0M    23L          
+
+What's next:
+    View vulnerabilities → docker scout cves staysync992/hms-backend:v5.0
+    Include policy results in your quickview by supplying an organization → docker scout quickview staysync992/hms-backend:v5.0 --org <organization>
+

@@ -323,13 +323,15 @@ export const getHotelList = async (req, res) => {
 
     const hotels = await User.find(
       { hotelId: { $in: hotelSettings.map((h) => h.hotelId) } },
-      'hotelId hotelName address'
+      'hotelId hotelName address phoneNumber email' // email 추가
     ).lean();
 
     const hotelList = hotels.map((hotel) => ({
       hotelId: hotel.hotelId,
       hotelName: hotel.hotelName || 'Unknown Hotel',
       address: hotel.address || 'Unknown Address',
+      phoneNumber: hotel.phoneNumber || 'Unknown Phone Number',
+      email: hotel.email || 'Unknown Email', // email 추가
     }));
 
     res.status(200).json(hotelList);
