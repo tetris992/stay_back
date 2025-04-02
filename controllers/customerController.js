@@ -438,14 +438,20 @@ export const getCustomerHotelSettings = async (req, res) => {
 
   try {
     const hotelSettings = await HotelSettingsModel.findOne({ hotelId })
-      .select('roomTypes photos basicInfo checkInTime checkOutTime gridSettings')
+      .select(
+        'roomTypes photos basicInfo checkInTime checkOutTime gridSettings'
+      )
       .lean();
 
     if (!hotelSettings) {
-      return res.status(404).json({ message: '해당 호텔의 설정 정보를 찾을 수 없습니다.' });
+      return res
+        .status(404)
+        .json({ message: '해당 호텔의 설정 정보를 찾을 수 없습니다.' });
     }
 
-    const hotel = await User.findOne({ hotelId }).select('hotelName address').lean();
+    const hotel = await User.findOne({ hotelId })
+      .select('hotelName address')
+      .lean();
 
     return res.status(200).json({
       hotelId,
@@ -459,8 +465,13 @@ export const getCustomerHotelSettings = async (req, res) => {
       gridSettings: hotelSettings.gridSettings,
     });
   } catch (error) {
-    logger.error(`Error fetching customer hotel settings: ${error.message}`, error);
-    res.status(500).json({ message: '서버 오류가 발생했습니다.', error: error.message });
+    logger.error(
+      `Error fetching customer hotel settings: ${error.message}`,
+      error
+    );
+    res
+      .status(500)
+      .json({ message: '서버 오류가 발생했습니다.', error: error.message });
   }
 };
 
@@ -491,7 +502,7 @@ export const createReservation = async (req, res) => {
       return res.status(400).json({ message: '유효하지 않은 객실 타입입니다.' });
     }
 
-    // 숙박일수 계산: 체크아웃과 체크인 날짜 차이 (1박 예약이면 차이가 1)
+    // 숙박일수 계산
     const checkInDate = startOfDay(new Date(checkIn));
     const checkOutDate = startOfDay(new Date(checkOut));
     const numDays = differenceInCalendarDays(checkOutDate, checkInDate);
@@ -500,7 +511,7 @@ export const createReservation = async (req, res) => {
       return res.status(400).json({ message: '체크아웃 날짜는 체크인 날짜 이후여야 합니다.' });
     }
 
-    // 총 가격 검증: 객실 1박 가격 × 숙박일수 (소수점 오차 허용 1원)
+    // 가격 검증
     const expectedTotalPrice = requestedRoomType.price * numDays;
     const tolerance = 1;
     if (Math.abs(parseFloat(price) - expectedTotalPrice) > tolerance) {
@@ -512,7 +523,7 @@ export const createReservation = async (req, res) => {
       });
     }
 
-    // 예약 가능 여부 확인 (calculateRoomAvailability 사용)
+    // 예약 가능 여부 확인
     const Reservation = getReservationModel(hotelId);
     const existingReservations = await Reservation.find({ hotelId, isCancelled: false });
     const availabilityByDate = calculateRoomAvailability(
@@ -524,7 +535,6 @@ export const createReservation = async (req, res) => {
     );
     const typeKey = roomInfo.toLowerCase();
     let minAvailableRooms = requestedRoomType.stock || 0;
-    // 예약 기간 동안의 남은 객실 수 확인
     for (let i = 0; i < numDays; i++) {
       const ds = format(addDays(checkInDate, i), 'yyyy-MM-dd');
       const dailyData = availabilityByDate[ds]?.[typeKey] || {
@@ -539,6 +549,16 @@ export const createReservation = async (req, res) => {
       return res.status(409).json({ message: '해당 기간에 이용 가능한 객실이 없습니다.' });
     }
 
+    // 시간 형식 보정
+    const defaultCheckInTime = hotelSettings?.checkInTime || '15:00';
+    const defaultCheckOutTime = hotelSettings?.checkOutTime || '11:00';
+    const formattedCheckIn = checkIn.includes('T') 
+      ? checkIn 
+      : `${checkIn}T${defaultCheckInTime}:00+09:00`;
+    const formattedCheckOut = checkOut.includes('T') 
+      ? checkOut 
+      : `${checkOut}T${defaultCheckOutTime}:00+09:00`;
+
     // 예약 생성
     const reservationId = `WEB-${uuidv4()}`;
     const newData = {
@@ -549,12 +569,12 @@ export const createReservation = async (req, res) => {
       phoneNumber: customer.phoneNumber,
       customerId: customer._id,
       roomInfo,
-      checkIn,
-      checkOut,
+      checkIn: formattedCheckIn, // 수정된 부분
+      checkOut: formattedCheckOut, // 수정된 부분
       reservationDate: new Date().toISOString().replace('Z', '+09:00'),
-      reservationStatus: 'Confirmed',
-      price: parseFloat(price), // 총 가격
-      numDays, // 숙박일수 추가
+      reservationStatus: req.body.reservationStatus || '예약완료',
+      price: parseFloat(price),
+      numDays,
       specialRequests: specialRequests || '',
       paymentMethod: '현장결제',
       isCancelled: false,
@@ -578,19 +598,17 @@ export const createReservation = async (req, res) => {
       { new: true }
     );
 
-    // 웹소켓을 통한 실시간 업데이트
+    // 웹소켓 업데이트
     if (req.app.get('io')) {
       req.app.get('io').to(hotelId).emit('reservationCreated', {
         reservation: newReservation.toObject(),
       });
-      req.app
-        .get('io')
-        .to(`customer_${customer._id}`)
-        .emit('reservationUpdated', {
-          reservation: newReservation.toObject(),
-        });
+      req.app.get('io').to(`customer_${customer._id}`).emit('reservationUpdated', {
+        reservation: newReservation.toObject(),
+      });
     }
 
+    // 알림톡 전송
     try {
       const shortReservationNumber = `WEB-${reservationId.slice(-8)}`;
       await sendReservationNotification(
@@ -625,7 +643,11 @@ export const getReservationHistory = async (req, res) => {
 
   try {
     const history = [];
-    for (const { hotelId, reservationId, visitCount } of customer.reservations) {
+    for (const {
+      hotelId,
+      reservationId,
+      visitCount,
+    } of customer.reservations) {
       const Reservation = getReservationModel(hotelId);
       const reservation = await Reservation.findById(reservationId);
       if (reservation) {
@@ -697,7 +719,9 @@ export const cancelReservation = async (req, res) => {
 
     if (!reservation.isCancellable) {
       logger.warn(`Reservation cannot be cancelled: ${reservationId}`);
-      return res.status(400).json({ message: '입실일에는 예약을 취소할 수 없습니다.' });
+      return res
+        .status(400)
+        .json({ message: '입실일에는 예약을 취소할 수 없습니다.' });
     }
 
     reservation.isCancelled = true;
@@ -952,7 +976,14 @@ export const logoutCustomer = async (req, res) => {
     logger.info(`Customer logged out: ${req.customer?.email || 'unknown'}`);
     res.json({ message: '로그아웃 성공' });
   } catch (error) {
-    logger.error(`Customer logout error: ${error.message}, customer: ${req.customer?.email || 'unknown'}`, error);
-    res.status(500).json({ message: '서버 오류가 발생했습니다.', error: error.message });
+    logger.error(
+      `Customer logout error: ${error.message}, customer: ${
+        req.customer?.email || 'unknown'
+      }`,
+      error
+    );
+    res
+      .status(500)
+      .json({ message: '서버 오류가 발생했습니다.', error: error.message });
   }
 };
