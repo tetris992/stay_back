@@ -39,7 +39,7 @@ const ReservationSchema = new mongoose.Schema(
     },
     phoneNumber: {
       type: String,
-      required: false,
+      required: false, // 이미 false로 설정되어 있음
     },
     roomInfo: {
       type: String,
@@ -179,8 +179,16 @@ ReservationSchema.index({ customerName: 1, createdAt: -1 });
 ReservationSchema.index({ type: 1 });
 ReservationSchema.index({ remainingBalance: 1 }); // 부분 결제 관련 조회 최적화
 
-// remainingBalance가 음수가 되지 않도록 검증
+// "판매보류" 등의 예약에 대해 price와 remainingBalance를 0으로 설정
 ReservationSchema.pre('save', function (next) {
+  const isSoldOut = ['판매보류', '판매중지', '판매중단', '판매금지'].includes(
+    this.customerName?.trim()
+  );
+  if (isSoldOut) {
+    this.price = 0;
+    this.remainingBalance = 0;
+    this.phoneNumber = this.phoneNumber || ''; // 전화번호가 없으면 빈 문자열로 설정
+  }
   if (this.remainingBalance < 0) {
     this.remainingBalance = 0;
   }
