@@ -202,11 +202,15 @@ export const createOrUpdateReservations = async (req, res) => {
 
       logger.debug('Data before save:', { reservationId, checkIn, checkOut });
 
-      const paymentMethod = availableOTAs.includes(siteName)
-        ? reservation.paymentMethod?.trim() || 'OTA'
-        : siteName === '현장예약'
-        ? reservation.paymentMethod || 'OTA'
-        : reservation.paymentMethod || 'OTA';
+      // paymentMethod 설정 로직 수정
+      let paymentMethod;
+      if (availableOTAs.includes(siteName)) {
+        paymentMethod = reservation.paymentMethod?.trim() || 'OTA';
+      } else if (siteName === '현장예약' || siteName === '단잠') {
+        paymentMethod = reservation.paymentMethod || '현장결제';
+      } else {
+        paymentMethod = reservation.paymentMethod || 'OTA';
+      }
 
       const paymentHistory = reservation.paymentHistory || [];
       const remainingBalance =
@@ -577,11 +581,11 @@ export const confirmReservation = async (req, res) => {
 
     if (!reservation)
       return res.status(404).send({ message: '예약을 찾을 수 없습니다.' });
-    if (reservation.reservationStatus === 'confirmed') {
+    if (reservation.reservationStatus === '예약완료') {
       return res.status(400).send({ message: '이미 확정된 예약입니다.' });
     }
 
-    reservation.reservationStatus = 'confirmed';
+    reservation.reservationStatus = '예약완료';
     const savedReservation = await reservation.save();
 
     if (req.app.get('io')) {
