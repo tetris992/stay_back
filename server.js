@@ -1,3 +1,4 @@
+// backend/app.js
 import express from 'express';
 import dotenv from 'dotenv';
 import cors from 'cors';
@@ -24,8 +25,8 @@ import reservationsExtensionRoutes from './routes/reservationsExtension.js';
 import { Server } from 'socket.io';
 import jwt from 'jsonwebtoken';
 import Customer from './models/Customer.js';
-import hotelPhotosRoutes from './routes/hotelPhotos.js';
 import { randomBytes } from 'crypto';
+import { verifyCsrfToken, generateCsrfToken } from './middleware/csrfMiddleware.js'; // 분리한 CSRF 미들웨어 임포트
 
 dotenv.config();
 
@@ -34,13 +35,8 @@ const PORT = process.env.PORT || 3003;
 
 console.log('Loaded NODE_ENV:', NODE_ENV);
 console.log('PORT from .env:', process.env.PORT || PORT);
-console.log(
-  'EXTENSION_ID:',
-  process.env.EXTENSION_ID || 'Default Extension ID'
-);
+console.log('EXTENSION_ID:', process.env.EXTENSION_ID || 'Default Extension ID');
 console.log('CORS_ORIGIN from .env:', process.env.CORS_ORIGIN);
-
-const csrfTokens = new Map(); // CSRF 토큰 저장소
 
 const app = express();
 
@@ -80,7 +76,6 @@ const allowedOrigins =
       ];
 console.log('Final CORS_ORIGIN:', allowedOrigins);
 
-// CORS 설정
 app.use(
   cors({
     origin: allowedOrigins,
@@ -106,7 +101,6 @@ app.use(
   })
 );
 
-// 프리플라이트 요청 직접 처리
 app.options(
   '*',
   cors({
@@ -136,7 +130,7 @@ app.options(
 app.use(cookieParser());
 app.use(express.json());
 
-// 요청 로깅 추가
+// 요청 로깅 미들웨어
 app.use((req, res, next) => {
   logger.info(`Request: ${req.method} ${req.url}`, {
     headers: req.headers,
@@ -146,21 +140,10 @@ app.use((req, res, next) => {
   next();
 });
 
-// CSRF 토큰 생성 엔드포인트
+// CSRF 토큰 생성 엔드포인트 (분리한 미들웨어의 generateCsrfToken 사용)
 app.get('/api/csrf-token', async (req, res) => {
   try {
-    const csrfToken = randomBytes(32).toString('hex');
-    const tokenId = randomBytes(16).toString('hex');
-    const expiresAt = Date.now() + 24 * 60 * 60 * 1000; // 24시간 유효
-
-    csrfTokens.set(tokenId, { token: csrfToken, expiresAt });
-
-    logger.info(`CSRF token generated: ${csrfToken}`, {
-      tokenId,
-      origin: req.headers.origin,
-      userAgent: req.headers['user-agent'],
-      headers: req.headers,
-    });
+    const { tokenId, csrfToken } = generateCsrfToken();
     res.json({ tokenId, csrfToken });
   } catch (error) {
     logger.error(`CSRF token generation failed: ${error.message}`, {
@@ -168,68 +151,11 @@ app.get('/api/csrf-token', async (req, res) => {
       headers: req.headers,
       ip: req.ip,
     });
-    res
-      .status(500)
-      .json({ message: 'Failed to generate CSRF token', error: error.message });
+    res.status(500).json({ message: 'Failed to generate CSRF token', error: error.message });
   }
 });
 
-// 수동 CSRF 검증 미들웨어
-const verifyCsrfToken = async (req, res, next) => {
-  if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
-    return next(); // GET, HEAD, OPTIONS 요청은 CSRF 검증 제외
-  }
-
-  const tokenId = req.headers['x-csrf-token-id'];
-  const csrfToken = req.headers['x-csrf-token'];
-
-  if (!tokenId || !csrfToken) {
-    logger.warn('CSRF token missing in request', {
-      method: req.method,
-      url: req.url,
-      headers: req.headers,
-    });
-    return res.status(403).json({ message: 'CSRF token missing' });
-  }
-
-  try {
-    const storedData = csrfTokens.get(tokenId);
-
-    if (!storedData) {
-      logger.warn('CSRF token not found', {
-        tokenId,
-        providedToken: csrfToken,
-        method: req.method,
-        url: req.url,
-      });
-      return res.status(403).json({ message: 'Invalid or expired CSRF token' });
-    }
-
-    const { token, expiresAt } = storedData;
-    if (token !== csrfToken || expiresAt < Date.now()) {
-      logger.warn('Invalid or expired CSRF token', {
-        tokenId,
-        providedToken: csrfToken,
-        method: req.method,
-        url: req.url,
-      });
-      return res.status(403).json({ message: 'Invalid or expired CSRF token' });
-    }
-
-    next();
-  } catch (error) {
-    logger.error(`CSRF token verification failed: ${error.message}`, {
-      stack: error.stack,
-      headers: req.headers,
-      ip: req.ip,
-    });
-    res
-      .status(500)
-      .json({ message: 'Failed to verify CSRF token', error: error.message });
-  }
-};
-
-// CSRF 검증 미들웨어 적용 (특정 라우트에만 적용)
+// 각 라우트에 인증, 동의, CSRF 검증 미들웨어 적용
 app.use(
   '/api/reservations',
   protect,
@@ -250,9 +176,7 @@ app.use(
   ensureConsent,
   reservationsExtensionRoutes
 );
-
 app.use('/api/auth', authRoutes);
-
 app.use(
   '/api/hotel-settings',
   protect,
@@ -260,16 +184,9 @@ app.use(
   verifyCsrfToken,
   hotelSettingsRoutes
 );
-
 app.use('/api/customer', verifyCsrfToken, customerRoutes);
 
-app.use(
-  '/api/hotel-settings/photos',
-  protect,
-  ensureConsent,
-  verifyCsrfToken,
-  hotelPhotosRoutes
-);
+// 호텔 사진 관련 라우트는 호텔 설정에 통합되었으므로 별도 라우트는 제거됨
 
 app.use(
   rateLimit({
@@ -291,17 +208,15 @@ app.get('/', (req, res) => {
   res.status(200).send('OK - HMS Backend is running');
 });
 
+// 전역 에러 핸들러
 app.use((err, req, res, next) => {
   logger.error(`Unhandled Error: ${err.message}`, err);
   const statusCode = err.statusCode || 500;
-  let message =
-    NODE_ENV === 'development' ? err.message : 'Internal Server Error';
-
-  const response = {
+  const message = NODE_ENV === 'development' ? err.message : 'Internal Server Error';
+  res.status(statusCode).json({
     message,
     stack: NODE_ENV === 'development' ? err.stack : undefined,
-  };
-  res.status(statusCode).json(response);
+  });
 });
 
 const startServer = async () => {
@@ -350,22 +265,15 @@ const startServer = async () => {
         logger.info(`Decoded JWT: ${JSON.stringify(decoded)}`);
         const customer = await Customer.findById(decoded.id);
         if (!customer) {
-          logger.warn(
-            `Customer not found for id: ${decoded.id}, client: ${socket.id}`
-          );
+          logger.warn(`Customer not found for id: ${decoded.id}, client: ${socket.id}`);
           return next(new Error('Authentication error: Customer not found'));
         }
         socket.customer = customer;
         socket.type = 'customer';
-        logger.info(
-          `Authenticated WebSocket customer: ${socket.id}, customerId: ${customer._id}`
-        );
+        logger.info(`Authenticated WebSocket customer: ${socket.id}, customerId: ${customer._id}`);
         return next();
       } catch (error) {
-        logger.error(
-          `Invalid customer token for client ${socket.id}: ${error.message}`,
-          { error, customerToken }
-        );
+        logger.error(`Invalid customer token for client ${socket.id}: ${error.message}`, { error, customerToken });
         return next(new Error('Authentication error: Invalid customer token'));
       }
     }
@@ -376,35 +284,21 @@ const startServer = async () => {
         logger.info(`Decoded JWT: ${JSON.stringify(decoded)}`);
         socket.user = decoded;
         socket.type = 'hotel';
-        logger.info(
-          `Authenticated WebSocket client: ${socket.id}, userId: ${decoded.id}`
-        );
+        logger.info(`Authenticated WebSocket client: ${socket.id}, userId: ${decoded.id}`);
         return next();
       } catch (error) {
-        logger.error(
-          `Invalid access token for client ${socket.id}: ${error.message}`,
-          { error, accessToken }
-        );
+        logger.error(`Invalid access token for client ${socket.id}: ${error.message}`, { error, accessToken });
         return next(new Error('Authentication error: Invalid access token'));
       }
     }
 
-    logger.warn(
-      'Missing hotelId/accessToken or customerToken, disconnecting client:',
-      socket.id
-    );
-    return next(
-      new Error(
-        'Authentication error: Missing hotelId/accessToken or customerToken'
-      )
-    );
+    logger.warn('Missing hotelId/accessToken or customerToken, disconnecting client:', socket.id);
+    return next(new Error('Authentication error: Missing hotelId/accessToken or customerToken'));
   });
 
   io.on('connection', (socket) => {
     const { hotelId } = socket.handshake.query;
-    logger.info(
-      `New client connected: ${socket.id}, type: ${socket.type}, hotelId: ${hotelId}`
-    );
+    logger.info(`New client connected: ${socket.id}, type: ${socket.type}, hotelId: ${hotelId}`);
 
     if (hotelId) {
       socket.join(hotelId);
@@ -419,28 +313,20 @@ const startServer = async () => {
     if (socket.type === 'customer') {
       socket.on('subscribeToReservationUpdates', (customerId) => {
         socket.join(`customer_${customerId}`);
-        logger.info(
-          `Client ${socket.id} subscribed to reservation updates for customer: ${customerId}`
-        );
+        logger.info(`Client ${socket.id} subscribed to reservation updates for customer: ${customerId}`);
       });
     }
 
     socket.on('createReservation', async (reservationData) => {
-      socket.emit('error', {
-        message: 'Use HTTP endpoint to create reservations',
-      });
+      socket.emit('error', { message: 'Use HTTP endpoint to create reservations' });
     });
 
     socket.on('updateReservation', async ({ reservationId, updatedData }) => {
-      socket.emit('error', {
-        message: 'Use HTTP endpoint to update reservations',
-      });
+      socket.emit('error', { message: 'Use HTTP endpoint to update reservations' });
     });
 
     socket.on('deleteReservation', async (reservationId) => {
-      socket.emit('error', {
-        message: 'Use HTTP endpoint to delete reservations',
-      });
+      socket.emit('error', { message: 'Use HTTP endpoint to delete reservations' });
     });
 
     socket.on('connect_error', (error) => {

@@ -316,32 +316,51 @@ export const registerCustomer = async (req, res) => {
 
 export const getHotelList = async (req, res) => {
   try {
-    const hotelSettings = await HotelSettingsModel.find({}, 'hotelId').lean();
+    // HotelSettings에서 호텔 ID, 체크인/체크아웃 시간, 공통 시설(온사이트 amenities) 조회
+    const hotelSettings = await HotelSettingsModel.find(
+      {},
+      'hotelId checkInTime checkOutTime amenities'
+    ).lean();
     if (!hotelSettings || hotelSettings.length === 0) {
       return res.status(404).json({ message: '등록된 호텔이 없습니다.' });
     }
 
+    // User에서 호텔 기본정보 조회 (이메일, 전화번호, 주소 등)
+    const hotelIds = hotelSettings.map((h) => h.hotelId);
     const hotels = await User.find(
-      { hotelId: { $in: hotelSettings.map((h) => h.hotelId) } },
-      'hotelId hotelName address phoneNumber email' // email 추가
+      { hotelId: { $in: hotelIds } },
+      'hotelId hotelName address phoneNumber email'
     ).lean();
 
+    // HotelSettings를 호텔 ID별로 매핑
+    const settingsMap = hotelSettings.reduce((acc, curr) => {
+      acc[curr.hotelId] = curr;
+      return acc;
+    }, {});
+
+    // 각 호텔 정보를 병합하여 반환
     const hotelList = hotels.map((hotel) => ({
       hotelId: hotel.hotelId,
       hotelName: hotel.hotelName || 'Unknown Hotel',
       address: hotel.address || 'Unknown Address',
       phoneNumber: hotel.phoneNumber || 'Unknown Phone Number',
-      email: hotel.email || 'Unknown Email', // email 추가
+      email: hotel.email || 'Unknown Email',
+      checkInTime: settingsMap[hotel.hotelId]?.checkInTime || 'N/A',
+      checkOutTime: settingsMap[hotel.hotelId]?.checkOutTime || 'N/A',
+      // 공통 시설은 온사이트 amenities만 필터 (isActive:true 인 경우)
+      amenities:
+        settingsMap[hotel.hotelId]?.amenities?.filter(
+          (a) => a.type === 'on-site' && a.isActive
+        ) || [],
     }));
 
     res.status(200).json(hotelList);
   } catch (error) {
     logger.error(`Error fetching hotel list: ${error.message}`, error);
-    res
-      .status(500)
-      .json({ message: '서버 오류가 발생했습니다.', error: error.message });
+    res.status(500).json({ message: '서버 오류가 발생했습니다.', error: error.message });
   }
 };
+
 
 export const getHotelAvailability = async (req, res) => {
   const { hotelId, checkIn, checkOut } = req.query;
