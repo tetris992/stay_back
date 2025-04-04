@@ -15,6 +15,7 @@ import {
 import asyncHandler from '../utils/asyncHandler.js';
 import logger from '../utils/logger.js';
 import { protect } from '../middleware/authMiddleware.js';
+import { verifyCsrfToken } from '../middleware/csrfMiddleware.js'; // CSRF 미들웨어 추가
 import { getAuthStatus } from '../controllers/authController.js';
 import HotelSettingsModel from '../models/HotelSettings.js';
 
@@ -22,13 +23,11 @@ const router = express.Router();
 
 // 토큰 유효성 검증 엔드포인트
 router.get('/validate', protect, (req, res) => {
-  res
-    .status(200)
-    .json({ message: 'Token is valid', hotelId: req.user.hotelId });
+  res.status(200).json({ message: 'Token is valid', hotelId: req.user.hotelId });
 });
 
 // POST /auth/consent
-router.post('/consent', protect, asyncHandler(postConsent));
+router.post('/consent', protect, verifyCsrfToken, asyncHandler(postConsent));
 
 // GET /auth/consent
 router.get('/consent', protect, asyncHandler(getConsentStatus));
@@ -54,10 +53,11 @@ router.post(
   })
 );
 
-// 로그아웃 라우트 (보호 미들웨어 적용 시)
+// 로그아웃 라우트
 router.post(
   '/logout',
   protect,
+  verifyCsrfToken,
   asyncHandler(async (req, res, next) => {
     logger.info('Logout route hit');
     await logout(req, res);
@@ -67,13 +67,14 @@ router.post(
 // 회원가입 라우트
 router.post(
   '/register',
+  verifyCsrfToken, // CSRF 검증 추가
   asyncHandler(async (req, res, next) => {
     logger.info('Register route hit');
     await registerUser(req, res);
   })
 );
 
-// 사용자 정보 가져오기 라우트 추가
+// 사용자 정보 가져오기 라우트
 router.get(
   '/users/:hotelId',
   protect,
@@ -83,10 +84,11 @@ router.get(
   })
 );
 
-// 사용자 정보 업데이트 라우트 추가
+// 사용자 정보 업데이트 라우트
 router.patch(
   '/users/:hotelId',
   protect,
+  verifyCsrfToken,
   asyncHandler(async (req, res) => {
     logger.info('Update User route hit');
     await updateUser(req, res);
@@ -115,6 +117,7 @@ router.post(
 router.post(
   '/validate-upload-password',
   protect,
+  verifyCsrfToken,
   asyncHandler(async (req, res) => {
     const { hotelId, password } = req.body;
 
