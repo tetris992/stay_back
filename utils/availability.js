@@ -21,16 +21,15 @@ export function calculateRoomAvailability(
   reservations,
   roomTypes,
   fromDate,
-  toDate,
   gridSettings = null
 ) {
   if (!fromDate || isNaN(new Date(fromDate))) {
-    logger.error('Invalid fromDate:', { fromDate });
+    console.error('Invalid fromDate:', { fromDate });
     return {};
   }
 
   const calcFromDate = startOfDay(new Date(fromDate));
-  const calcToDate = startOfDay(addMonths(calcFromDate, 1));
+  const calcToDate = startOfDay(addMonths(calcFromDate, 3)); // 변경: addMonths(calcFromDate, 1) → addMonths(calcFromDate, 3)
   const numDays = differenceInCalendarDays(calcToDate, calcFromDate) + 1;
   const dateList = [];
   for (let i = 0; i < numDays; i++) {
