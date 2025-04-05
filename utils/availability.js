@@ -21,6 +21,7 @@ export function calculateRoomAvailability(
   reservations,
   roomTypes,
   fromDate,
+  toDate,
   gridSettings = null
 ) {
   if (!fromDate || isNaN(new Date(fromDate))) {
