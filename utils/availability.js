@@ -1,4 +1,4 @@
-// availability.js
+//backend availability.js
 
 import logger from './logger.js'; // logger 임포트 추가
 import {
@@ -37,7 +37,7 @@ export function calculateRoomAvailability(
     dateList.push(format(addDays(calcFromDate, i), 'yyyy-MM-dd'));
   }
 
-  // 객실 타입별 정보 구성
+  // 객실 타입별 정보 구성: gridSettings 기준으로 객실 수 계산
   const roomDataByType = {};
   roomTypes.forEach((rt) => {
     const tKey = rt.roomInfo.toLowerCase();
@@ -50,13 +50,19 @@ export function calculateRoomAvailability(
           return (
             cellTypeKey === tKey &&
             cell.roomNumber &&
-            cell.roomNumber.trim() !== ''
+            cell.roomNumber.trim() !== '' &&
+            cell.isActive // isActive가 true인 객실만 포함
           );
         })
         .map((cell) => cell.roomNumber)
         .sort();
     }
-    roomDataByType[tKey] = { stock: rt.stock || rooms.length, rooms };
+    // stock은 gridSettings에서 계산된 객실 수를 사용
+    const stock = rooms.length; // roomTypes.stock 대신 gridSettings에서 계산된 객실 수 사용
+    roomDataByType[tKey] = { stock, rooms };
+    logger.info(
+      `[calculateRoomAvailability] ${tKey}: stock=${stock}, rooms=${rooms}`
+    );
   });
 
   // 날짜별 사용량 초기화
@@ -90,7 +96,10 @@ export function calculateRoomAvailability(
       isNaN(ci.getTime()) ||
       isNaN(co.getTime())
     ) {
-        logger.warn('[calculateRoomAvailability] Invalid reservation dates:', res);
+      logger.warn(
+        '[calculateRoomAvailability] Invalid reservation dates:',
+        res
+      );
       return;
     }
 
@@ -197,7 +206,7 @@ export function calculateRoomAvailability(
         const allRooms = roomDataByType[typeKey]?.rooms || [];
         const assigned = Array.from(usage.assignedRooms);
         const checkedOut = Array.from(usage.checkedOutRooms);
-        const totalStock = roomDataByType[typeKey]?.stock || allRooms.length;
+        const totalStock = roomDataByType[typeKey]?.stock || 0;
         const leftoverRooms = allRooms.filter(
           (rnum) => !assigned.includes(rnum) && !checkedOut.includes(rnum)
         );
@@ -544,7 +553,6 @@ export const checkConflict = (
   }
   return { isConflict: false };
 };
-
 
 export function computeRemainingInventory(roomTypes, reservations) {
   const today = new Date();
