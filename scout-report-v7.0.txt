@@ -1,0 +1,1 @@
+[31mERROR  [0m Status: failed to get image staysync992/hms-backend:v7.0: failed to pull image staysync992/hms-backend:v7.0: no child with platform linux/arm64 in index staysync992/hms-backend:v7.0, Code: 1 
