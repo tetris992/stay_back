@@ -30,38 +30,65 @@ export function calculateRoomAvailability(
   }
 
   const calcFromDate = startOfDay(new Date(fromDate));
-  const calcToDate = startOfDay(addMonths(calcFromDate, 3)); // 변경: addMonths(calcFromDate, 1) → addMonths(calcFromDate, 3)
+  const calcToDate = toDate
+    ? startOfDay(new Date(toDate))
+    : startOfDay(addMonths(calcFromDate, 3));
   const numDays = differenceInCalendarDays(calcToDate, calcFromDate) + 1;
   const dateList = [];
   for (let i = 0; i < numDays; i++) {
     dateList.push(format(addDays(calcFromDate, i), 'yyyy-MM-dd'));
   }
 
-  // 객실 타입별 정보 구성: gridSettings 기준으로 객실 수 계산
+  // roomTypes 검증 및 필터링
+  if (!Array.isArray(roomTypes)) {
+    logger.error('[calculateRoomAvailability] roomTypes is not an array:', roomTypes);
+    return {};
+  }
+
+  // 객실 타입별 정보 구성: roomNumbers와 gridSettings 기준으로 객실 수 계산
   const roomDataByType = {};
-  roomTypes.forEach((rt) => {
+  roomTypes.forEach((rt, index) => {
+    // rt가 객체이고 roomInfo 속성이 있는지 확인
+    if (!rt || typeof rt !== 'object' || !rt.roomInfo || typeof rt.roomInfo !== 'string') {
+      logger.warn(
+        `[calculateRoomAvailability] Invalid roomType at index ${index}:`,
+        rt
+      );
+      return; // 유효하지 않은 roomType은 건너뜀
+    }
+
     const tKey = rt.roomInfo.toLowerCase();
     let rooms = rt.roomNumbers || [];
-    if ((!rooms || rooms.length === 0) && gridSettings?.floors) {
-      rooms = gridSettings.floors
-        .flatMap((floor) => floor.containers || [])
-        .filter((cell) => {
-          const cellTypeKey = (cell.roomInfo || 'standard').toLowerCase();
-          return (
-            cellTypeKey === tKey &&
-            cell.roomNumber &&
-            cell.roomNumber.trim() !== '' &&
-            cell.isActive // isActive가 true인 객실만 포함
-          );
-        })
-        .map((cell) => cell.roomNumber)
-        .sort();
+    let stock = rt.stock || 0;
+
+    // roomNumbers가 비어 있거나 유효하지 않은 경우 gridSettings를 사용
+    if (!rooms || rooms.length === 0 || rooms.length !== stock) {
+      if (gridSettings?.floors) {
+        rooms = gridSettings.floors
+          .flatMap((floor) => floor.containers || [])
+          .filter((cell) => {
+            const cellTypeKey = (cell.roomInfo || 'standard').toLowerCase();
+            return (
+              cellTypeKey === tKey &&
+              cell.roomNumber &&
+              cell.roomNumber.trim() !== '' &&
+              cell.isActive
+            );
+          })
+          .map((cell) => cell.roomNumber)
+          .sort();
+        stock = rooms.length; // gridSettings 기준으로 stock 재계산
+      } else {
+        logger.warn(
+          `[calculateRoomAvailability] No gridSettings provided for ${tKey}, using stock from roomTypes`
+        );
+        rooms = Array.from({ length: stock }, (_, i) => `room-${i + 1}`);
+      }
     }
-    // stock은 gridSettings에서 계산된 객실 수를 사용
-    const stock = rooms.length; // roomTypes.stock 대신 gridSettings에서 계산된 객실 수 사용
+
     roomDataByType[tKey] = { stock, rooms };
     logger.info(
-      `[calculateRoomAvailability] ${tKey}: stock=${stock}, rooms=${rooms}`
+      `[calculateRoomAvailability] ${tKey}: stock=${stock}, rooms=${rooms.join(', ')}`
     );
   });
 
@@ -71,11 +98,11 @@ export function calculateRoomAvailability(
     usageByDate[ds] = {};
     Object.keys(roomDataByType).forEach((typeKey) => {
       usageByDate[ds][typeKey] = {
-        count: 0, // 점유된 객실 수
-        assignedRooms: new Set(), // 점유된 객실 번호
-        checkedOutRooms: new Set(), // 퇴실 처리된 객실 번호
-        reservations: [], // 점유된 예약 정보
-        checkedOutReservations: [], // 퇴실 처리된 예약 정보
+        count: 0,
+        assignedRooms: new Set(),
+        checkedOutRooms: new Set(),
+        reservations: [],
+        checkedOutReservations: [],
       };
     });
     usageByDate[ds]['unassigned'] = {
@@ -124,12 +151,12 @@ export function calculateRoomAvailability(
               if (isCheckedOut) {
                 usageByDate[ds][typeKey].checkedOutCount++;
                 usageByDate[ds][typeKey].checkedOutReservations.push({
-                  ...res, // 모든 필드 포함
+                  ...res,
                 });
               } else {
                 usageByDate[ds][typeKey].count++;
                 usageByDate[ds][typeKey].reservations.push({
-                  ...res, // 모든 필드 포함
+                  ...res,
                 });
               }
             }
@@ -138,12 +165,12 @@ export function calculateRoomAvailability(
               if (isCheckedOut) {
                 usageByDate[ds][typeKey].checkedOutCount++;
                 usageByDate[ds][typeKey].checkedOutReservations.push({
-                  ...res, // 모든 필드 포함
+                  ...res,
                 });
               } else {
                 usageByDate[ds][typeKey].count++;
                 usageByDate[ds][typeKey].reservations.push({
-                  ...res, // 모든 필드 포함
+                  ...res,
                 });
               }
             }
@@ -155,7 +182,7 @@ export function calculateRoomAvailability(
               if (isCheckedOut) {
                 usageByDate[ds][typeKey].checkedOutRooms.add(res.roomNumber);
                 usageByDate[ds][typeKey].checkedOutReservations.push({
-                  ...res, // 모든 필드 포함
+                  ...res,
                 });
               } else {
                 usageByDate[ds][typeKey].count++;
@@ -163,7 +190,7 @@ export function calculateRoomAvailability(
                   usageByDate[ds][typeKey].assignedRooms.add(res.roomNumber);
                 }
                 usageByDate[ds][typeKey].reservations.push({
-                  ...res, // 모든 필드 포함
+                  ...res,
                 });
               }
             }
@@ -172,7 +199,7 @@ export function calculateRoomAvailability(
               if (isCheckedOut) {
                 usageByDate[ds][typeKey].checkedOutRooms.add(res.roomNumber);
                 usageByDate[ds][typeKey].checkedOutReservations.push({
-                  ...res, // 모든 필드 포함
+                  ...res,
                 });
               } else {
                 usageByDate[ds][typeKey].count++;
@@ -180,7 +207,7 @@ export function calculateRoomAvailability(
                   usageByDate[ds][typeKey].assignedRooms.add(res.roomNumber);
                 }
                 usageByDate[ds][typeKey].reservations.push({
-                  ...res, // 모든 필드 포함
+                  ...res,
                 });
               }
             }

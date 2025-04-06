@@ -355,7 +355,7 @@ export const updateHotelSettings = async (req, res) => {
     if (roomTypes !== undefined) {
       updateData.roomTypes = roomTypes.map((rt) => ({
         ...rt,
-        // roomAmenities는 프런트에서 보내온 값을 그대로 저장
+        isBaseRoom: rt.isBaseRoom,
         roomAmenities: rt.roomAmenities
           ? rt.roomAmenities.map((amenity) => ({
               nameKor: amenity.nameKor,
@@ -377,7 +377,9 @@ export const updateHotelSettings = async (req, res) => {
         photos: rt.photos || [],
       }));
       logger.info(
-        `[updateHotelSettings] roomTypes with roomAmenities: ${JSON.stringify(updateData.roomTypes)}`
+        `[updateHotelSettings] roomTypes with roomAmenities: ${JSON.stringify(
+          updateData.roomTypes
+        )}`
       );
     }
 

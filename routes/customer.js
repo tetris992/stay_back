@@ -1,4 +1,3 @@
-// backend/routes/customer.js
 import express from 'express';
 import asyncHandler from '../utils/asyncHandler.js';
 import { protectCustomer } from '../middleware/authMiddleware.js';
@@ -16,6 +15,7 @@ import {
   getHotelAvailability,
   getCustomerHotelSettings,
   logoutCustomer,
+  getSocialLoginSettings, // 추가된 임포트
 } from '../controllers/customerController.js';
 
 const router = express.Router();
@@ -69,6 +69,13 @@ router.post(
 
 // 비밀번호 재설정 처리
 router.post('/reset-password/:token', asyncHandler(resetCustomerPassword));
+
+// 소셜 로그인 설정 조회 (추가된 라우트)
+router.get(
+  '/social-login-settings',
+  protectCustomer,
+  asyncHandler(getSocialLoginSettings)
+);
 
 // 예약 취소 (인증 필요)
 router.delete(
