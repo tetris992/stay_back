@@ -31,7 +31,6 @@ const AmenitySchema = new mongoose.Schema(
   { _id: false }
 );
 
-
 // 사진 스키마 정의
 const PhotoSchema = new mongoose.Schema(
   {
@@ -47,7 +46,10 @@ const PhotoSchema = new mongoose.Schema(
     photoUrl: {
       type: String,
       required: true,
-      match: [/^https:\/\/.*\.s3\..*\.amazonaws\.com\/.+$/, '유효한 S3 URL이어야 합니다.'],
+      match: [
+        /^https:\/\/.*\.s3\..*\.amazonaws\.com\/.+$/,
+        '유효한 S3 URL이어야 합니다.',
+      ],
     },
     order: {
       type: Number,
@@ -74,12 +76,15 @@ const RoomTypeSchema = new mongoose.Schema(
     aliases: [{ type: String, lowercase: true }],
     floorSettings: { type: Map, of: Number, default: {} },
     startRoomNumbers: { type: Map, of: String, default: {} },
+    isBaseRoom: { type: Boolean, default: false },
     roomAmenities: {
       type: [AmenitySchema],
       default: () =>
-        DEFAULT_AMENITIES.filter((amenity) => amenity.type === 'in-room').map((amenity) => ({
-          ...amenity,
-        })),
+        DEFAULT_AMENITIES.filter((amenity) => amenity.type === 'in-room').map(
+          (amenity) => ({
+            ...amenity,
+          })
+        ),
     },
     photos: {
       type: [PhotoSchema],
@@ -150,16 +155,16 @@ const HotelSettingsSchema = new mongoose.Schema(
           aliases: [],
           floorSettings: {},
           startRoomNumbers: {},
-          roomAmenities: DEFAULT_AMENITIES.filter((amenity) => amenity.type === 'in-room').map(
-            (amenity) => ({ ...amenity })
-          ),
+          roomAmenities: DEFAULT_AMENITIES.filter(
+            (amenity) => amenity.type === 'in-room'
+          ).map((amenity) => ({ ...amenity })),
           photos: [],
         },
         ...defaultRoomTypes.map((rt) => ({
           ...rt,
-          roomAmenities: DEFAULT_AMENITIES.filter((amenity) => amenity.type === 'in-room').map(
-            (amenity) => ({ ...amenity })
-          ),
+          roomAmenities: DEFAULT_AMENITIES.filter(
+            (amenity) => amenity.type === 'in-room'
+          ).map((amenity) => ({ ...amenity })),
           photos: [],
         })),
       ],
@@ -180,9 +185,11 @@ const HotelSettingsSchema = new mongoose.Schema(
     amenities: {
       type: [AmenitySchema],
       default: () =>
-        DEFAULT_AMENITIES.filter((amenity) => amenity.type === 'on-site').map((amenity) => ({
-          ...amenity,
-        })),
+        DEFAULT_AMENITIES.filter((amenity) => amenity.type === 'on-site').map(
+          (amenity) => ({
+            ...amenity,
+          })
+        ),
     },
     photos: {
       type: [PhotoSchema],
@@ -209,7 +216,10 @@ const HotelSettingsSchema = new mongoose.Schema(
 );
 
 // 인덱스 추가로 조회 성능 최적화
-HotelSettingsSchema.index({ 'roomTypes.photos.category': 1, 'roomTypes.photos.subCategory': 1 });
+HotelSettingsSchema.index({
+  'roomTypes.photos.category': 1,
+  'roomTypes.photos.subCategory': 1,
+});
 HotelSettingsSchema.index({ 'photos.category': 1, 'photos.subCategory': 1 });
 
 export default mongoose.model('HotelSettings', HotelSettingsSchema);
