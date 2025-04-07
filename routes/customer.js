@@ -15,7 +15,8 @@ import {
   getHotelAvailability,
   getCustomerHotelSettings,
   logoutCustomer,
-  getSocialLoginSettings, // 추가된 임포트
+  getSocialLoginSettings,
+  refreshCustomerToken,
 } from '../controllers/customerController.js';
 
 const router = express.Router();
@@ -28,6 +29,12 @@ router.post('/login/social/:provider', asyncHandler(loginCustomerSocial));
 
 // 고객 로그아웃
 router.post('/logout', protectCustomer, asyncHandler(logoutCustomer));
+
+// 리프레시 토큰 엔드포인트 추가
+router.post(
+  '/refresh-token',
+  asyncHandler(refreshCustomerToken)
+);
 
 // 회원가입
 router.post('/register', asyncHandler(registerCustomer));

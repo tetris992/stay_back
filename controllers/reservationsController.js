@@ -89,9 +89,17 @@ const processPayment = async (reservation, payments, hotelId, req) => {
 export const getReservations = async (req, res) => {
   const { name, hotelId } = req.query;
 
-  if (!hotelId) return res.status(400).send({ message: 'hotelId is required' });
+  const user = req.user || req.customer;
+  if (!user) {
+    return res.status(401).json({ message: 'Unauthorized, user not found' });
+  }
 
-  const Reservation = getReservationModel(hotelId);
+  const finalHotelId = req.user ? req.user.hotelId : hotelId;
+  if (!finalHotelId) {
+    return res.status(400).send({ message: 'hotelId is required' });
+  }
+
+  const Reservation = getReservationModel(finalHotelId);
   const filter = { isCancelled: false };
   if (name) filter.customerName = { $regex: new RegExp(`^${name}$`, 'i') };
 
@@ -107,8 +115,12 @@ export const getReservations = async (req, res) => {
 
 export const createOrUpdateReservations = async (req, res) => {
   const { siteName, reservations, hotelId, selectedDate } = req.body;
-  const finalHotelId = hotelId || req.user?.hotelId;
+  const user = req.user || req.customer;
+  if (!user) {
+    return res.status(401).json({ message: 'Unauthorized, user not found' });
+  }
 
+  const finalHotelId = req.user ? req.user.hotelId : hotelId;
   if (!siteName || !reservations || !finalHotelId) {
     return res
       .status(400)
@@ -141,9 +153,12 @@ export const createOrUpdateReservations = async (req, res) => {
       let checkIn, checkOut, reservationDate;
 
       // "판매보류", "판매중지", "판매중단", "판매금지" 여부 확인
-      const isSoldOut = ['판매보류', '판매중지', '판매중단', '판매금지'].includes(
-        reservation.customerName?.trim()
-      );
+      const isSoldOut = [
+        '판매보류',
+        '판매중지',
+        '판매중단',
+        '판매금지',
+      ].includes(reservation.customerName?.trim());
 
       if (siteName === '현장예약') {
         const checkInTime = hotelSettings?.checkInTime || '15:00';
@@ -187,9 +202,12 @@ export const createOrUpdateReservations = async (req, res) => {
             });
           }
         } else {
-          // "판매보류" 등의 예약은 시간 입력이 없어도 기본값으로 설정
-          const finalCheckInTime = isSoldOut ? checkInTime : (reservation.checkInTime || checkInTime);
-          const finalCheckOutTime = isSoldOut ? checkOutTime : (reservation.checkOutTime || checkOutTime);
+          const finalCheckInTime = isSoldOut
+            ? checkInTime
+            : reservation.checkInTime || checkInTime;
+          const finalCheckOutTime = isSoldOut
+            ? checkOutTime
+            : reservation.checkOutTime || checkOutTime;
           checkIn = `${reservation.checkInDate}T${finalCheckInTime}:00+09:00`;
           checkOut = `${reservation.checkOutDate}T${finalCheckOutTime}:00+09:00`;
         }
@@ -211,7 +229,6 @@ export const createOrUpdateReservations = async (req, res) => {
 
       logger.debug('Data before save:', { reservationId, checkIn, checkOut });
 
-      // paymentMethod 설정 로직 수정
       let paymentMethod;
       if (availableOTAs.includes(siteName)) {
         paymentMethod = reservation.paymentMethod?.trim() || 'OTA';
@@ -232,7 +249,9 @@ export const createOrUpdateReservations = async (req, res) => {
       const updateData = {
         siteName,
         customerName: reservation.customerName,
-        phoneNumber: isSoldOut ? '' : sanitizePhoneNumber(reservation.phoneNumber),
+        phoneNumber: isSoldOut
+          ? ''
+          : sanitizePhoneNumber(reservation.phoneNumber),
         roomInfo: reservation.roomInfo,
         checkIn,
         checkOut,
@@ -246,7 +265,8 @@ export const createOrUpdateReservations = async (req, res) => {
         paymentMethod,
         hotelId: finalHotelId,
         type: reservation.type || 'stay',
-        duration: reservation.type === 'dayUse' ? reservation.duration || 3 : null,
+        duration:
+          reservation.type === 'dayUse' ? reservation.duration || 3 : null,
         notificationHistory: [],
         sentCreate: false,
         sentCancel: false,
@@ -263,7 +283,9 @@ export const createOrUpdateReservations = async (req, res) => {
       updateData.isCancelled = cancelled;
 
       const existingReservation = await Reservation.findById(reservationId);
-      const existingCanceled = await CanceledReservation.findById(reservationId);
+      const existingCanceled = await CanceledReservation.findById(
+        reservationId
+      );
 
       if (existingCanceled) {
         if (cancelled) {
@@ -281,7 +303,9 @@ export const createOrUpdateReservations = async (req, res) => {
             isCancelled: false,
           });
           await newReservation.save();
-          logger.info(`Moved canceled reservation back to normal: ${reservationId}`);
+          logger.info(
+            `Moved canceled reservation back to normal: ${reservationId}`
+          );
           createdReservationIds.push(reservationId);
 
           if (req.app.get('io')) {
@@ -290,9 +314,15 @@ export const createOrUpdateReservations = async (req, res) => {
             });
           }
 
-          if (siteName === '현장예약' && updateData.type === 'stay' && !isSoldOut) {
+          if (
+            siteName === '현장예약' &&
+            updateData.type === 'stay' &&
+            !isSoldOut
+          ) {
             try {
-              const shortReservationNumber = getShortReservationNumber(newReservation._id);
+              const shortReservationNumber = getShortReservationNumber(
+                newReservation._id
+              );
               await sendReservationNotification(
                 newReservation.toObject(),
                 finalHotelId,
@@ -302,7 +332,9 @@ export const createOrUpdateReservations = async (req, res) => {
               logger.info(`알림톡 전송 성공 (생성): ${shortReservationNumber}`);
             } catch (err) {
               logger.error(
-                `알림톡 전송 실패 (생성, ID: ${getShortReservationNumber(newReservation._id)}):`,
+                `알림톡 전송 실패 (생성, ID: ${getShortReservationNumber(
+                  newReservation._id
+                )}):`,
                 err
               );
             }
@@ -328,9 +360,15 @@ export const createOrUpdateReservations = async (req, res) => {
               .emit('reservationDeleted', { reservationId });
           }
 
-          if (siteName === '현장예약' && existingReservation.type === 'stay' && !isSoldOut) {
+          if (
+            siteName === '현장예약' &&
+            existingReservation.type === 'stay' &&
+            !isSoldOut
+          ) {
             try {
-              const shortReservationNumber = getShortReservationNumber(existingReservation._id);
+              const shortReservationNumber = getShortReservationNumber(
+                existingReservation._id
+              );
               await sendReservationNotification(
                 existingReservation.toObject(),
                 finalHotelId,
@@ -340,7 +378,9 @@ export const createOrUpdateReservations = async (req, res) => {
               logger.info(`알림톡 전송 성공 (취소): ${shortReservationNumber}`);
             } catch (err) {
               logger.error(
-                `알림톡 전송 실패 (취소, ID: ${getShortReservationNumber(existingReservation._id)}):`,
+                `알림톡 전송 실패 (취소, ID: ${getShortReservationNumber(
+                  existingReservation._id
+                )}):`,
                 err
               );
             }
@@ -363,10 +403,16 @@ export const createOrUpdateReservations = async (req, res) => {
           );
           if (isConflict) {
             const conflictCheckIn = conflictReservation.checkIn
-              ? format(new Date(conflictReservation.checkIn), 'yyyy-MM-dd HH:mm')
+              ? format(
+                  new Date(conflictReservation.checkIn),
+                  'yyyy-MM-dd HH:mm'
+                )
               : '정보 없음';
             const conflictCheckOut = conflictReservation.checkOut
-              ? format(new Date(conflictReservation.checkOut), 'yyyy-MM-dd HH:mm')
+              ? format(
+                  new Date(conflictReservation.checkOut),
+                  'yyyy-MM-dd HH:mm'
+                )
               : '정보 없음';
             return res.status(409).send({
               message: `객실 ${
@@ -422,10 +468,16 @@ export const createOrUpdateReservations = async (req, res) => {
           );
           if (isConflict) {
             const conflictCheckIn = conflictReservation.checkIn
-              ? format(new Date(conflictReservation.checkIn), 'yyyy-MM-dd HH:mm')
+              ? format(
+                  new Date(conflictReservation.checkIn),
+                  'yyyy-MM-dd HH:mm'
+                )
               : '정보 없음';
             const conflictCheckOut = conflictReservation.checkOut
-              ? format(new Date(conflictReservation.checkOut), 'yyyy-MM-dd HH:mm')
+              ? format(
+                  new Date(conflictReservation.checkOut),
+                  'yyyy-MM-dd HH:mm'
+                )
               : '정보 없음';
             return res.status(409).send({
               message: `객실 ${
@@ -451,9 +503,15 @@ export const createOrUpdateReservations = async (req, res) => {
             });
           }
 
-          if (siteName === '현장예약' && updateData.type === 'stay' && !isSoldOut) {
+          if (
+            siteName === '현장예약' &&
+            updateData.type === 'stay' &&
+            !isSoldOut
+          ) {
             try {
-              const shortReservationNumber = getShortReservationNumber(newReservation._id);
+              const shortReservationNumber = getShortReservationNumber(
+                newReservation._id
+              );
               await sendReservationNotification(
                 newReservation.toObject(),
                 finalHotelId,
@@ -463,7 +521,9 @@ export const createOrUpdateReservations = async (req, res) => {
               logger.info(`알림톡 전송 성공 (생성): ${shortReservationNumber}`);
             } catch (err) {
               logger.error(
-                `알림톡 전송 실패 (생성, ID: ${getShortReservationNumber(newReservation._id)}):`,
+                `알림톡 전송 실패 (생성, ID: ${getShortReservationNumber(
+                  newReservation._id
+                )}):`,
                 err
               );
             }
@@ -490,17 +550,23 @@ export const deleteReservation = async (req, res) => {
   const { reservationId } = req.params;
   const { hotelId, siteName } = req.query;
 
-  if (!reservationId || !hotelId || !siteName) {
+  const user = req.user || req.customer;
+  if (!user) {
+    return res.status(401).json({ message: 'Unauthorized, user not found' });
+  }
+
+  const finalHotelId = req.user ? req.user.hotelId : hotelId;
+  if (!reservationId || !finalHotelId || !siteName) {
     return res
       .status(400)
       .send({ message: 'reservationId, hotelId, siteName는 필수입니다.' });
   }
 
   try {
-    const Reservation = getReservationModel(hotelId);
+    const Reservation = getReservationModel(finalHotelId);
     const reservation = await Reservation.findOne({
       _id: reservationId,
-      hotelId,
+      hotelId: finalHotelId,
       siteName,
     });
 
@@ -510,7 +576,7 @@ export const deleteReservation = async (req, res) => {
     if (req.app.get('io')) {
       req.app
         .get('io')
-        .to(hotelId)
+        .to(finalHotelId)
         .emit('reservationDeleted', { reservationId });
     }
 
@@ -521,7 +587,7 @@ export const deleteReservation = async (req, res) => {
         );
         await sendReservationNotification(
           reservation.toObject(),
-          hotelId,
+          finalHotelId,
           'cancel',
           getShortReservationNumber
         );
@@ -548,17 +614,23 @@ export const confirmReservation = async (req, res) => {
   const { reservationId } = req.params;
   const { hotelId } = req.body;
 
-  if (!reservationId || !hotelId) {
+  const user = req.user || req.customer;
+  if (!user) {
+    return res.status(401).json({ message: 'Unauthorized, user not found' });
+  }
+
+  const finalHotelId = req.user ? req.user.hotelId : hotelId;
+  if (!reservationId || !finalHotelId) {
     return res
       .status(400)
       .send({ message: 'reservationId와 hotelId는 필수입니다.' });
   }
 
   try {
-    const Reservation = getReservationModel(hotelId);
+    const Reservation = getReservationModel(finalHotelId);
     const reservation = await Reservation.findOne({
       _id: reservationId,
-      hotelId,
+      hotelId: finalHotelId,
     });
 
     if (!reservation)
@@ -571,7 +643,7 @@ export const confirmReservation = async (req, res) => {
     const savedReservation = await reservation.save();
 
     if (req.app.get('io')) {
-      req.app.get('io').to(hotelId).emit('reservationUpdated', {
+      req.app.get('io').to(finalHotelId).emit('reservationUpdated', {
         reservation: savedReservation.toObject(),
       });
     }
@@ -590,7 +662,13 @@ export const updateReservation = async (req, res) => {
   const { reservationId } = req.params;
   const { hotelId, roomNumber, selectedDate, ...updateData } = req.body;
 
-  if (!hotelId) {
+  const user = req.user || req.customer;
+  if (!user) {
+    return res.status(401).json({ message: 'Unauthorized, user not found' });
+  }
+
+  const finalHotelId = req.user ? req.user.hotelId : hotelId;
+  if (!finalHotelId) {
     return res.status(400).send({ message: 'hotelId는 필수입니다.' });
   }
   if (!reservationId) {
@@ -601,10 +679,10 @@ export const updateReservation = async (req, res) => {
   }
 
   try {
-    const Reservation = getReservationModel(hotelId);
+    const Reservation = getReservationModel(finalHotelId);
     const reservation = await Reservation.findOne({
       _id: reservationId,
-      hotelId,
+      hotelId: finalHotelId,
     });
 
     if (!reservation) {
@@ -628,7 +706,7 @@ export const updateReservation = async (req, res) => {
       );
     } else if (newRoomNumber && newRoomNumber !== reservation.roomNumber) {
       const allReservations = await Reservation.find({
-        hotelId,
+        hotelId: finalHotelId,
         isCancelled: false,
         manuallyCheckedOut: false,
       });
@@ -682,7 +760,7 @@ export const updateReservation = async (req, res) => {
     }
 
     if (req.app.get('io')) {
-      req.app.get('io').to(hotelId).emit('reservationUpdated', {
+      req.app.get('io').to(finalHotelId).emit('reservationUpdated', {
         reservation: savedReservation.toObject(),
       });
     }
@@ -706,10 +784,17 @@ export const updateReservation = async (req, res) => {
 export const getCanceledReservations = async (req, res) => {
   const { hotelId } = req.query;
 
-  if (!hotelId)
-    return res.status(400).send({ message: 'hotelId는 필수입니다.' });
+  const user = req.user || req.customer;
+  if (!user) {
+    return res.status(401).json({ message: 'Unauthorized, user not found' });
+  }
 
-  const CanceledReservation = getCanceledReservationModel(hotelId);
+  const finalHotelId = req.user ? req.user.hotelId : hotelId;
+  if (!finalHotelId) {
+    return res.status(400).send({ message: 'hotelId는 필수입니다.' });
+  }
+
+  const CanceledReservation = getCanceledReservationModel(finalHotelId);
 
   try {
     const canceledReservations = await CanceledReservation.find();
@@ -726,9 +811,15 @@ export const payPerNight = async (req, res) => {
   const { reservationId } = req.params;
   const { hotelId, amount, method } = req.body;
 
-  if (!hotelId || !reservationId || !amount) {
+  const user = req.user || req.customer;
+  if (!user) {
+    return res.status(401).json({ message: 'Unauthorized, user not found' });
+  }
+
+  const finalHotelId = req.user ? req.user.hotelId : hotelId;
+  if (!finalHotelId || !reservationId || !amount) {
     logger.warn('[payPerNight] Missing required fields:', {
-      hotelId,
+      hotelId: finalHotelId,
       reservationId,
       amount,
       method,
@@ -739,10 +830,10 @@ export const payPerNight = async (req, res) => {
   }
 
   try {
-    const Reservation = getReservationModel(hotelId);
+    const Reservation = getReservationModel(finalHotelId);
     const reservation = await Reservation.findOne({
       _id: reservationId,
-      hotelId,
+      hotelId: finalHotelId,
     });
 
     if (!reservation) {
@@ -786,7 +877,7 @@ export const payPerNight = async (req, res) => {
     const savedReservation = await processPayment(
       reservation,
       payments,
-      hotelId,
+      finalHotelId,
       req
     );
 
@@ -816,9 +907,15 @@ export const payPartial = async (req, res) => {
   const { reservationId } = req.params;
   const { hotelId, payments } = req.body;
 
-  if (!hotelId || !reservationId || !payments) {
+  const user = req.user || req.customer;
+  if (!user) {
+    return res.status(401).json({ message: 'Unauthorized, user not found' });
+  }
+
+  const finalHotelId = req.user ? req.user.hotelId : hotelId;
+  if (!finalHotelId || !reservationId || !payments) {
     logger.warn('[payPartial] Missing required fields:', {
-      hotelId,
+      hotelId: finalHotelId,
       reservationId,
       payments,
     });
@@ -835,10 +932,10 @@ export const payPartial = async (req, res) => {
   }
 
   try {
-    const Reservation = getReservationModel(hotelId);
+    const Reservation = getReservationModel(finalHotelId);
     const reservation = await Reservation.findOne({
       _id: reservationId,
-      hotelId,
+      hotelId: finalHotelId,
     });
 
     if (!reservation) {
@@ -849,7 +946,7 @@ export const payPartial = async (req, res) => {
     const savedReservation = await processPayment(
       reservation,
       payments,
-      hotelId,
+      finalHotelId,
       req
     );
 

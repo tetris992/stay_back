@@ -15,12 +15,21 @@ const FACILITY_SUB_CATEGORIES = [
   'restaurant',
   'pool',
   'gym',
-  'spa',
-  'parking',
-  'conferenceRoom',
-  'bar',
-  'garden',
+  'parkingLot',
+  'laundryRoom',
+  'loungeArea',
   'terrace',
+  'rooftop',
+  'spaSauna',
+  'businessCenter',
+  'meetingRoom',
+  'banquetHall',
+  'kidsClub',
+  'barLounge',
+  'cafe',
+  'convenienceStore',
+  'garden',
+  'others',
 ];
 
 /**
@@ -465,36 +474,64 @@ export const updateHotelSettings = async (req, res) => {
  * 사진 업로드
  */
 export const uploadHotelPhoto = async (req, res) => {
-  const { hotelId, category, subCategory, order } = req.body;
-  const file = req.file;
+  const { hotelId, category, subCategory } = req.body;
+  const files = req.files; // 다중 파일 처리
+  const orders = req.body.order || []; // order 배열 받기
 
-  if (!hotelId || !category || !subCategory || !file) {
+  if (!hotelId || !category || !subCategory || !files || files.length === 0) {
     return res.status(400).json({
       success: false,
       message: 'hotelId, category, subCategory, photo는 필수입니다.',
     });
   }
 
-  const parsedOrder = parseInt(order, 10);
-  if (isNaN(parsedOrder) || parsedOrder < 1 || parsedOrder > 100) {
+  const validCategories = ['room', 'exterior', 'facility'];
+  if (!validCategories.includes(category)) {
+    return res.status(400).json({
+      success: false,
+      message: `category는 ${validCategories.join(', ')} 중 하나여야 합니다.`,
+    });
+  }
+
+  if (
+    category === 'facility' &&
+    !FACILITY_SUB_CATEGORIES.includes(subCategory)
+  ) {
+    return res.status(400).json({
+      success: false,
+      message: `facility subCategory는 ${FACILITY_SUB_CATEGORIES.join(
+        ', '
+      )} 중 하나여야 합니다.`,
+    });
+  }
+
+  // order 값 검증
+  const parsedOrders = Array.isArray(orders)
+    ? orders.map((ord) => parseInt(ord, 10))
+    : files.map(() => 1); // order가 없으면 기본값 1
+  if (parsedOrders.some((ord) => isNaN(ord) || ord < 1 || ord > 100)) {
     return res.status(400).json({
       success: false,
       message: 'order는 1에서 100 사이의 숫자여야 합니다.',
     });
   }
 
+  let session = null;
   try {
-    const session = await mongoose.startSession();
+    session = await mongoose.startSession();
     session.startTransaction();
 
-    try {
-      const hotelSettings = await HotelSettingsModel.findOne({
-        hotelId,
-      }).session(session);
-      if (!hotelSettings) {
-        throw new Error('호텔 설정을 찾을 수 없습니다.');
-      }
+    const hotelSettings = await HotelSettingsModel.findOne({ hotelId }).session(
+      session
+    );
+    if (!hotelSettings) {
+      throw new Error('호텔 설정을 찾을 수 없습니다.');
+    }
 
+    const newPhotos = [];
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const parsedOrder = parsedOrders[i] || 1; // 개별 order 값 사용
       const photoUrl = await uploadToS3(file, hotelId, category, subCategory);
       const newPhoto = {
         category,
@@ -503,8 +540,6 @@ export const uploadHotelPhoto = async (req, res) => {
         order: parsedOrder,
         isActive: true,
       };
-
-      // 카테고리에 따라 사진 저장 위치 결정
       if (category === 'room') {
         const roomType = hotelSettings.roomTypes.find(
           (rt) => rt.roomInfo === subCategory
@@ -516,87 +551,108 @@ export const uploadHotelPhoto = async (req, res) => {
       } else {
         hotelSettings.photos.push(newPhoto);
       }
-
-      await hotelSettings.save({ session });
-      await session.commitTransaction();
-
-      logger.info(
-        `Photo uploaded and saved for hotelId: ${hotelId}, url: ${photoUrl}`
-      );
-
-      if (req.app.get('io')) {
-        req.app.get('io').to(hotelId).emit('photoUploaded', {
-          hotelId,
-          photo: newPhoto,
-        });
-      }
-
-      res
-        .status(201)
-        .json({ success: true, message: '사진 업로드 성공', photo: newPhoto });
-    } catch (error) {
-      await session.abortTransaction();
-      throw error;
-    } finally {
-      session.endSession();
+      newPhotos.push(newPhoto);
     }
+
+    await hotelSettings.save({ session });
+    await session.commitTransaction();
+
+    newPhotos.forEach((photo) => {
+      logger.info(`Photo uploaded: ${photo.photoUrl}, hotelId: ${hotelId}`);
+      if (req.app.get('io')) {
+        req.app.get('io').to(hotelId).emit('photoUploaded', { hotelId, photo });
+      }
+    });
+
+    res.status(201).json({
+      success: true,
+      message: '사진 업로드 성공',
+      photos: newPhotos,
+    });
   } catch (error) {
+    if (session) {
+      await session.abortTransaction();
+    }
     logger.error(`Photo upload error: ${error.message}`, {
       hotelId,
       category,
       subCategory,
+      stack: error.stack,
     });
-    res
-      .status(error.message.includes('유효하지 않은') ? 400 : 500)
-      .json({ success: false, message: error.message });
+    res.status(error.message.includes('유효하지 않은') ? 400 : 500).json({
+      success: false,
+      message: `사진 업로드 실패: ${error.message}`,
+    });
+  } finally {
+    if (session) {
+      session.endSession();
+    }
   }
 };
 
 /**
  * GET /hotel-settings/photos
- * 사진 목록 조회
+ * 사진 목록 조회 – roomPhotos와 commonPhotos로 분리하여 반환
  */
 export const getHotelPhotos = async (req, res) => {
-  const { hotelId, category, subCategory } = req.query;
-  if (!hotelId) {
-    return res
-      .status(400)
-      .json({ success: false, message: 'hotelId는 필수입니다.' });
-  }
-
   try {
-    const hotelSettings = await HotelSettingsModel.findOne({ hotelId });
+    const { hotelId, category, subCategory } = req.query;
+
+    if (!hotelId) {
+      return res.status(400).json({ message: 'hotelId is required' });
+    }
+
+    // req.user (HMS 프론트엔드) 또는 req.customer (단잠앱) 확인
+    const user = req.user || req.customer;
+    if (!user) {
+      return res.status(401).json({ message: 'Unauthorized, user not found' });
+    }
+
+    logger.info(`Fetching photos for hotelId: ${hotelId}, category: ${category}, subCategory: ${subCategory}, user: ${user._id}`);
+
+    const hotelSettings = await HotelSettingsModel.findOne({ hotelId }).lean();
     if (!hotelSettings) {
-      return res
-        .status(404)
-        .json({ success: false, message: '호텔 설정을 찾을 수 없습니다.' });
+      return res.status(404).json({ message: 'Hotel settings not found' });
     }
 
-    let photos = [];
-    // 객실 타입별 사진 수집
-    hotelSettings.roomTypes.forEach((rt) => {
-      photos = [...photos, ...rt.photos];
+    // 공통 사진 (exterior, facility)
+    const commonPhotos = hotelSettings.photos || [];
+
+    // 객실별 사진 (roomTypes.photos)
+    const roomPhotos = hotelSettings.roomTypes
+      .flatMap((rt) =>
+        (rt.photos || []).map((photo) => ({
+          ...photo,
+          subCategory: rt.roomInfo, // 객실 타입을 subCategory로 설정
+        }))
+      )
+      .filter((photo) => photo.isActive);
+
+    const filteredCommonPhotos = commonPhotos.filter(
+      (photo) =>
+        (!category || photo.category === category) &&
+        (!subCategory || photo.subCategory === subCategory) &&
+        photo.isActive
+    );
+
+    const filteredRoomPhotos = roomPhotos.filter(
+      (photo) =>
+        (!category || photo.category === category) &&
+        (!subCategory || photo.subCategory === subCategory) &&
+        photo.isActive
+    );
+
+    res.status(200).json({
+      success: true,
+      hotelId,
+      commonPhotos: filteredCommonPhotos,
+      roomPhotos: filteredRoomPhotos,
     });
-    // 호텔 공통 사진 추가
-    photos = [...photos, ...hotelSettings.photos];
-
-    // 필터링
-    if (category) {
-      photos = photos.filter((p) => p.category === category);
-      if (subCategory) {
-        photos = photos.filter((p) => p.subCategory === subCategory);
-      }
-    }
-
-    res.status(200).json({ success: true, hotelId, photos });
   } catch (error) {
-    logger.error(`Get hotel photos error: ${error.message}`, { hotelId });
-    res
-      .status(500)
-      .json({ success: false, message: `서버 오류: ${error.message}` });
+    logger.error(`Error fetching hotel photos: ${error.message}`, error);
+    res.status(500).json({ message: 'Server error', error: error.message });
   }
 };
-
 /**
  * DELETE /hotel-settings/photos
  * 사진 삭제

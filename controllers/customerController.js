@@ -17,7 +17,6 @@ import {
   differenceInCalendarDays,
 } from 'date-fns';
 
-
 const sanitizePhoneNumber = (phoneNumber) =>
   phoneNumber ? phoneNumber.replace(/\D/g, '') : '';
 
@@ -82,7 +81,15 @@ const processPayment = async (reservation, payments, hotelId, req) => {
 };
 
 const generateCustomerToken = (customer) => {
-  return jwt.sign({ id: customer._id }, process.env.JWT_SECRET, { expiresIn: '1d' });
+  return jwt.sign({ id: customer._id }, process.env.JWT_SECRET, {
+    expiresIn: '1d',
+  });
+};
+
+const generateRefreshToken = (customer) => {
+  return jwt.sign({ id: customer._id }, process.env.REFRESH_TOKEN_SECRET, {
+    expiresIn: '7d',
+  });
 };
 
 export const loginCustomerSocial = async (req, res) => {
@@ -91,31 +98,43 @@ export const loginCustomerSocial = async (req, res) => {
 
   if (!['kakao', 'naver', 'google'].includes(provider)) {
     logger.warn(`Invalid social login provider: ${provider}`);
-    return res.status(400).json({ message: '지원하지 않는 소셜 로그인 제공자입니다.' });
+    return res
+      .status(400)
+      .json({ message: '지원하지 않는 소셜 로그인 제공자입니다.' });
   }
 
-  // Kakao 로그인 활성화 상태 확인 (추가된 로직)
   if (provider === 'kakao') {
-    const hotelSettings = await HotelSettingsModel.findOne({}, 'socialLoginSettings').lean();
+    const hotelSettings = await HotelSettingsModel.findOne(
+      {},
+      'socialLoginSettings'
+    ).lean();
     if (!hotelSettings || !hotelSettings.socialLoginSettings?.kakao?.enabled) {
       logger.warn(`Kakao login is disabled`);
-      return res.status(403).json({ message: 'Kakao 로그인은 현재 비활성화되어 있습니다.' });
+      return res
+        .status(403)
+        .json({ message: 'Kakao 로그인은 현재 비활성화되어 있습니다.' });
     }
   }
 
-  // Naver와 Google은 인증키가 없으므로 비활성화
   if (provider === 'naver' || provider === 'google') {
     logger.info(`Social login for ${provider} is not implemented yet`);
-    return res.status(400).json({ message: `현재 ${provider} 로그인은 지원되지 않습니다.` });
+    return res
+      .status(400)
+      .json({ message: `현재 ${provider} 로그인은 지원되지 않습니다.` });
   }
 
-  const trimmedProviderId = typeof providerId === 'string' ? providerId.trim() : '';
+  const trimmedProviderId =
+    typeof providerId === 'string' ? providerId.trim() : '';
   const trimmedName = typeof name === 'string' ? name.trim() : '';
   const trimmedEmail = typeof email === 'string' ? email.trim() : '';
 
   if (!trimmedProviderId || !trimmedName || !trimmedEmail) {
-    logger.warn(`Missing required fields for social login: providerId=${providerId}, name=${name}, email=${email}`);
-    return res.status(400).json({ message: 'providerId, name, email은 필수입니다.' });
+    logger.warn(
+      `Missing required fields for social login: providerId=${providerId}, name=${name}, email=${email}`
+    );
+    return res
+      .status(400)
+      .json({ message: 'providerId, name, email은 필수입니다.' });
   }
 
   try {
@@ -132,12 +151,16 @@ export const loginCustomerSocial = async (req, res) => {
         socialLogin: { provider, providerId: trimmedProviderId },
       });
       await customer.save();
-      logger.info(`New customer created via social login: ${customer.email}, provider: ${provider}`);
+      logger.info(
+        `New customer created via social login: ${customer.email}, provider: ${provider}`
+      );
     }
 
-    // OpenID Connect가 활성화된 경우 ID 토큰 처리 (Kakao 전용) (추가된 로직)
     if (provider === 'kakao' && idToken) {
-      const hotelSettings = await HotelSettingsModel.findOne({}, 'socialLoginSettings').lean();
+      const hotelSettings = await HotelSettingsModel.findOne(
+        {},
+        'socialLoginSettings'
+      ).lean();
       if (hotelSettings?.socialLoginSettings?.kakao?.openIdConnectEnabled) {
         logger.info(`Kakao ID Token received: ${idToken}`);
         customer.openIdData = { idToken };
@@ -146,9 +169,14 @@ export const loginCustomerSocial = async (req, res) => {
     }
 
     const token = generateCustomerToken(customer);
-    logger.info(`Customer logged in via social: ${customer.email}, provider: ${provider}`);
+    const refreshToken = generateRefreshToken(customer);
+    customer.refreshToken = refreshToken;
+    await customer.save();
+    logger.info(
+      `Customer logged in via social: ${customer.email}, provider: ${provider}, refreshToken: ${refreshToken}`
+    );
 
-    const redirectUrl = `/auth/${provider}/callback?token=${token}&customer=${encodeURIComponent(
+    const redirectUrl = `/auth/${provider}/callback?token=${token}&refreshToken=${refreshToken}&customer=${encodeURIComponent(
       JSON.stringify({
         name: customer.name,
         phoneNumber: customer.phoneNumber,
@@ -168,8 +196,6 @@ export const loginCustomerSocial = async (req, res) => {
 const getShortReservationNumber = (reservationId) => {
   return `WEB-${reservationId.slice(-8)}`;
 };
-
-
 
 export const loginCustomer = async (req, res) => {
   const { phoneNumber, password, name, email } = req.body;
@@ -209,9 +235,15 @@ export const loginCustomer = async (req, res) => {
     }
 
     const token = generateCustomerToken(customer);
-    logger.info(`Customer logged in: ${customer.phoneNumber}`);
+    const refreshToken = generateRefreshToken(customer);
+    customer.refreshToken = refreshToken;
+    await customer.save();
+    logger.info(
+      `Customer logged in: ${customer.phoneNumber}, refreshToken: ${refreshToken}`
+    );
     res.status(200).json({
       token,
+      refreshToken,
       customer: { name: customer.name, phoneNumber, email: customer.email },
     });
   } catch (error) {
@@ -221,8 +253,6 @@ export const loginCustomer = async (req, res) => {
       .json({ message: '서버 오류가 발생했습니다.', error: error.message });
   }
 };
-
-
 
 export const connectSocialAccount = async (req, res) => {
   const { provider } = req.params;
@@ -236,19 +266,26 @@ export const connectSocialAccount = async (req, res) => {
       .json({ message: '지원하지 않는 소셜 로그인 제공자입니다.' });
   }
 
-  // Kakao 로그인 활성화 상태 확인 (추가된 로직)
   if (provider === 'kakao') {
-    const hotelSettings = await HotelSettingsModel.findOne({}, 'socialLoginSettings').lean();
+    const hotelSettings = await HotelSettingsModel.findOne(
+      {},
+      'socialLoginSettings'
+    ).lean();
     if (!hotelSettings || !hotelSettings.socialLoginSettings?.kakao?.enabled) {
       logger.warn(`Kakao login is disabled`);
-      return res.status(403).json({ message: 'Kakao 로그인은 현재 비활성화되어 있습니다.' });
+      return res
+        .status(403)
+        .json({ message: 'Kakao 로그인은 현재 비활성화되어 있습니다.' });
     }
   }
 
-  // Naver와 Google은 인증키가 없으므로 비활성화
   if (provider === 'naver' || provider === 'google') {
-    logger.info(`Social account connection for ${provider} is not implemented yet`);
-    return res.status(400).json({ message: `현재 ${provider} 계정 연결은 지원되지 않습니다.` });
+    logger.info(
+      `Social account connection for ${provider} is not implemented yet`
+    );
+    return res
+      .status(400)
+      .json({ message: `현재 ${provider} 계정 연결은 지원되지 않습니다.` });
   }
 
   if (!providerId) {
@@ -256,16 +293,17 @@ export const connectSocialAccount = async (req, res) => {
     return res.status(400).json({ message: 'providerId는 필수입니다.' });
   }
 
-  const trimmedProviderId = typeof providerId === 'string' ? providerId.trim() : '';
+  const trimmedProviderId =
+    typeof providerId === 'string' ? providerId.trim() : '';
   const trimmedEmail = typeof email === 'string' ? email.trim() : '';
 
-  // providerId 유효성 검사
   if (!trimmedProviderId || trimmedProviderId.length < 5) {
-    logger.warn(`Invalid providerId for social connection: ${trimmedProviderId}`);
+    logger.warn(
+      `Invalid providerId for social connection: ${trimmedProviderId}`
+    );
     return res.status(400).json({ message: '유효한 providerId가 필요합니다.' });
   }
 
-  // 이메일 유효성 검사
   if (trimmedEmail && !/^\S+@\S+\.\S+$/.test(trimmedEmail)) {
     logger.warn(`Invalid email format for social connection: ${trimmedEmail}`);
     return res.status(400).json({ message: '유효한 이메일 형식이 아닙니다.' });
@@ -293,23 +331,27 @@ export const connectSocialAccount = async (req, res) => {
       customer.email = trimmedEmail;
     }
 
-    // OpenID Connect가 활성화된 경우 ID 토큰 처리 (Kakao 전용) (추가된 로직)
     if (provider === 'kakao' && idToken) {
-      const hotelSettings = await HotelSettingsModel.findOne({}, 'socialLoginSettings').lean();
+      const hotelSettings = await HotelSettingsModel.findOne(
+        {},
+        'socialLoginSettings'
+      ).lean();
       if (hotelSettings?.socialLoginSettings?.kakao?.openIdConnectEnabled) {
         logger.info(`Kakao ID Token received for connection: ${idToken}`);
         customer.openIdData = { idToken };
       }
     }
 
+    const token = generateCustomerToken(customer);
+    const refreshToken = generateRefreshToken(customer);
+    customer.refreshToken = refreshToken;
     await customer.save();
 
     logger.info(
       `Social account connected: ${customer.email}, provider: ${provider}`
     );
 
-    const token = generateCustomerToken(customer);
-    const redirectUrl = `/auth/${provider}/callback?token=${token}&customer=${encodeURIComponent(
+    const redirectUrl = `/auth/${provider}/callback?token=${token}&refreshToken=${refreshToken}&customer=${encodeURIComponent(
       JSON.stringify({
         name: customer.name,
         phoneNumber: customer.phoneNumber,
@@ -361,10 +403,12 @@ export const registerCustomer = async (req, res) => {
       password,
       consentChecked: !!consentChecked,
     });
-    await customer.save();
     const token = generateCustomerToken(customer);
+    const refreshToken = generateRefreshToken(customer);
+    customer.refreshToken = refreshToken;
+    await customer.save();
     logger.info(`New customer registered: ${customer.email}`);
-    res.status(201).json({ token, customer });
+    res.status(201).json({ token, refreshToken, customer });
   } catch (error) {
     logger.error(`Customer registration error: ${error.message}`, error);
     res
@@ -376,16 +420,57 @@ export const registerCustomer = async (req, res) => {
 export const getHotelList = async (req, res) => {
   try {
     const validIcons = [
-      'FaWifi', 'FaBath', 'FaTv', 'FaUmbrellaBeach', 'FaTshirt', 'FaFilm',
-      'FaChair', 'FaSmoking', 'FaStore', 'FaCoffee', 'FaSnowflake', 'FaFire',
-      'FaGlassMartini', 'FaWind', 'FaLock', 'FaCouch', 'FaUtensils',
-      'FaConciergeBell', 'FaPaw', 'FaWheelchair', 'FaBan', 'FaVolumeMute',
-      'FaToilet', 'FaShower', 'FaHotTub', 'FaSpa', 'FaDumbbell',
-      'FaSwimmingPool', 'FaParking', 'FaChargingStation', 'FaBriefcase',
-      'FaUsers', 'FaGlassCheers', 'FaChild', 'FaCocktail', 'FaTree',
-      'FaBuilding', 'FaMicrophone', 'FaClock', 'FaSuitcase', 'FaBus',
-      'FaCar', 'FaMap', 'FaMoneyBillWave', 'FaSoap', 'FaDesktop',
-      'FaMoneyCheck', 'FaGolfBall', 'FaGamepad', 'FaBicycle', 'FaDoorOpen'
+      'FaWifi',
+      'FaBath',
+      'FaTv',
+      'FaUmbrellaBeach',
+      'FaTshirt',
+      'FaFilm',
+      'FaChair',
+      'FaSmoking',
+      'FaStore',
+      'FaCoffee',
+      'FaSnowflake',
+      'FaFire',
+      'FaGlassMartini',
+      'FaWind',
+      'FaLock',
+      'FaCouch',
+      'FaUtensils',
+      'FaConciergeBell',
+      'FaPaw',
+      'FaWheelchair',
+      'FaBan',
+      'FaVolumeMute',
+      'FaToilet',
+      'FaShower',
+      'FaHotTub',
+      'FaSpa',
+      'FaDumbbell',
+      'FaSwimmingPool',
+      'FaParking',
+      'FaChargingStation',
+      'FaBriefcase',
+      'FaUsers',
+      'FaGlassCheers',
+      'FaChild',
+      'FaCocktail',
+      'FaTree',
+      'FaBuilding',
+      'FaMicrophone',
+      'FaClock',
+      'FaSuitcase',
+      'FaBus',
+      'FaCar',
+      'FaMap',
+      'FaMoneyBillWave',
+      'FaSoap',
+      'FaDesktop',
+      'FaMoneyCheck',
+      'FaGolfBall',
+      'FaGamepad',
+      'FaBicycle',
+      'FaDoorOpen',
     ];
 
     const hotelSettings = await HotelSettingsModel.find(
@@ -408,9 +493,11 @@ export const getHotelList = async (req, res) => {
     }, {});
 
     const hotelList = hotels.map((hotel) => {
-      const amenities = settingsMap[hotel.hotelId]?.amenities?.filter(
-        (a) => a.type === 'on-site' && a.isActive && validIcons.includes(a.icon)
-      ) || [];
+      const amenities =
+        settingsMap[hotel.hotelId]?.amenities?.filter(
+          (a) =>
+            a.type === 'on-site' && a.isActive && validIcons.includes(a.icon)
+        ) || [];
       return {
         hotelId: hotel.hotelId,
         hotelName: hotel.hotelName || 'Unknown Hotel',
@@ -467,7 +554,6 @@ export const getHotelAvailability = async (req, res) => {
     const roomTypes = hotelSettings.roomTypes || [];
     const gridSettings = hotelSettings.gridSettings || {};
 
-    // roomTypes와 gridSettings 검증
     if (!Array.isArray(roomTypes) || roomTypes.length === 0) {
       logger.warn(`Invalid roomTypes for hotelId: ${hotelId}`, roomTypes);
       return res
@@ -481,7 +567,6 @@ export const getHotelAvailability = async (req, res) => {
         .json({ message: 'gridSettings 데이터가 유효하지 않습니다.' });
     }
 
-    // gridSettings.floors의 containers 검증
     const invalidContainers = gridSettings.floors.some((floor) => {
       if (!floor || !Array.isArray(floor.containers)) {
         return true;
@@ -498,11 +583,9 @@ export const getHotelAvailability = async (req, res) => {
         `Invalid containers in gridSettings for hotelId: ${hotelId}`,
         gridSettings
       );
-      return res
-        .status(400)
-        .json({
-          message: 'gridSettings의 containers 데이터가 유효하지 않습니다.',
-        });
+      return res.status(400).json({
+        message: 'gridSettings의 containers 데이터가 유효하지 않습니다.',
+      });
     }
 
     console.log('[getHotelAvailability] roomTypes:', roomTypes);
@@ -512,8 +595,8 @@ export const getHotelAvailability = async (req, res) => {
       reservations,
       roomTypes,
       checkIn,
-      checkOut,      // checkOut 날짜 전달
-      gridSettings   // gridSettings는 마지막 인자로 전달
+      checkOut,
+      gridSettings
     );
 
     const availability = roomTypes.map((roomType) => {
@@ -570,16 +653,57 @@ export const getCustomerHotelSettings = async (req, res) => {
   }
 
   const validIcons = [
-    'FaWifi', 'FaBath', 'FaTv', 'FaUmbrellaBeach', 'FaTshirt', 'FaFilm',
-    'FaChair', 'FaSmoking', 'FaStore', 'FaCoffee', 'FaSnowflake', 'FaFire',
-    'FaGlassMartini', 'FaWind', 'FaLock', 'FaCouch', 'FaUtensils',
-    'FaConciergeBell', 'FaPaw', 'FaWheelchair', 'FaBan', 'FaVolumeMute',
-    'FaToilet', 'FaShower', 'FaHotTub', 'FaSpa', 'FaDumbbell',
-    'FaSwimmingPool', 'FaParking', 'FaChargingStation', 'FaBriefcase',
-    'FaUsers', 'FaGlassCheers', 'FaChild', 'FaCocktail', 'FaTree',
-    'FaBuilding', 'FaMicrophone', 'FaClock', 'FaSuitcase', 'FaBus',
-    'FaCar', 'FaMap', 'FaMoneyBillWave', 'FaSoap', 'FaDesktop',
-    'FaMoneyCheck', 'FaGolfBall', 'FaGamepad', 'FaBicycle', 'FaDoorOpen'
+    'FaWifi',
+    'FaBath',
+    'FaTv',
+    'FaUmbrellaBeach',
+    'FaTshirt',
+    'FaFilm',
+    'FaChair',
+    'FaSmoking',
+    'FaStore',
+    'FaCoffee',
+    'FaSnowflake',
+    'FaFire',
+    'FaGlassMartini',
+    'FaWind',
+    'FaLock',
+    'FaCouch',
+    'FaUtensils',
+    'FaConciergeBell',
+    'FaPaw',
+    'FaWheelchair',
+    'FaBan',
+    'FaVolumeMute',
+    'FaToilet',
+    'FaShower',
+    'FaHotTub',
+    'FaSpa',
+    'FaDumbbell',
+    'FaSwimmingPool',
+    'FaParking',
+    'FaChargingStation',
+    'FaBriefcase',
+    'FaUsers',
+    'FaGlassCheers',
+    'FaChild',
+    'FaCocktail',
+    'FaTree',
+    'FaBuilding',
+    'FaMicrophone',
+    'FaClock',
+    'FaSuitcase',
+    'FaBus',
+    'FaCar',
+    'FaMap',
+    'FaMoneyBillWave',
+    'FaSoap',
+    'FaDesktop',
+    'FaMoneyCheck',
+    'FaGolfBall',
+    'FaGamepad',
+    'FaBicycle',
+    'FaDoorOpen',
   ];
 
   try {
@@ -599,12 +723,12 @@ export const getCustomerHotelSettings = async (req, res) => {
       .select('hotelName address')
       .lean();
 
-    // roomTypes 내의 amenities 필터링
     const filteredRoomTypes = hotelSettings.roomTypes.map((roomType) => ({
       ...roomType,
-      roomAmenities: roomType.roomAmenities?.filter(
-        (amenity) => validIcons.includes(amenity.icon)
-      ) || [],
+      roomAmenities:
+        roomType.roomAmenities?.filter((amenity) =>
+          validIcons.includes(amenity.icon)
+        ) || [],
     }));
 
     return res.status(200).json({
@@ -635,7 +759,6 @@ export const createReservation = async (req, res) => {
     const { hotelId, roomInfo, checkIn, checkOut, price, specialRequests } =
       req.body;
 
-    // 필수 필드 검증
     if (!hotelId || !roomInfo || !checkIn || !checkOut || !price) {
       logger.warn(
         `[createReservation] Missing fields: hotelId=${hotelId}, roomInfo=${roomInfo}, checkIn=${checkIn}, checkOut=${checkOut}, price=${price}`
@@ -643,7 +766,6 @@ export const createReservation = async (req, res) => {
       return res.status(400).json({ message: '모든 필드는 필수입니다.' });
     }
 
-    // 호텔 설정 및 객실 타입 확인
     const hotelSettings = await HotelSettingsModel.findOne({ hotelId });
     if (!hotelSettings) {
       logger.warn(
@@ -663,7 +785,6 @@ export const createReservation = async (req, res) => {
         .json({ message: '유효하지 않은 객실 타입입니다.' });
     }
 
-    // 숙박일수 계산
     const checkInDate = startOfDay(new Date(checkIn));
     const checkOutDate = startOfDay(new Date(checkOut));
     const numDays = differenceInCalendarDays(checkOutDate, checkInDate);
@@ -676,7 +797,6 @@ export const createReservation = async (req, res) => {
         .json({ message: '체크아웃 날짜는 체크인 날짜 이후여야 합니다.' });
     }
 
-    // 가격 검증
     const expectedTotalPrice = requestedRoomType.price * numDays;
     const tolerance = 1;
     if (Math.abs(parseFloat(price) - expectedTotalPrice) > tolerance) {
@@ -688,7 +808,6 @@ export const createReservation = async (req, res) => {
       });
     }
 
-    // 예약 가능 여부 확인
     const Reservation = getReservationModel(hotelId);
     const existingReservations = await Reservation.find({
       hotelId,
@@ -719,7 +838,6 @@ export const createReservation = async (req, res) => {
         .json({ message: '해당 기간에 이용 가능한 객실이 없습니다.' });
     }
 
-    // 시간 형식 보정
     const defaultCheckInTime = hotelSettings?.checkInTime || '15:00';
     const defaultCheckOutTime = hotelSettings?.checkOutTime || '11:00';
     const formattedCheckIn = checkIn.includes('T')
@@ -729,7 +847,6 @@ export const createReservation = async (req, res) => {
       ? checkOut
       : `${checkOut}T${defaultCheckOutTime}:00+09:00`;
 
-    // 예약 생성
     const reservationId = `WEB-${uuidv4()}`;
     const newData = {
       _id: reservationId,
@@ -739,8 +856,8 @@ export const createReservation = async (req, res) => {
       phoneNumber: customer.phoneNumber,
       customerId: customer._id,
       roomInfo,
-      checkIn: formattedCheckIn, // 수정된 부분
-      checkOut: formattedCheckOut, // 수정된 부분
+      checkIn: formattedCheckIn,
+      checkOut: formattedCheckOut,
       reservationDate: new Date().toISOString().replace('Z', '+09:00'),
       reservationStatus: req.body.reservationStatus || '예약완료',
       price: parseFloat(price),
@@ -758,7 +875,6 @@ export const createReservation = async (req, res) => {
     const newReservation = new Reservation(newData);
     await newReservation.save();
 
-    // 고객 예약 정보 업데이트
     await Customer.findByIdAndUpdate(
       customer._id,
       {
@@ -768,7 +884,6 @@ export const createReservation = async (req, res) => {
       { new: true }
     );
 
-    // 웹소켓 업데이트
     if (req.app.get('io')) {
       req.app.get('io').to(hotelId).emit('reservationCreated', {
         reservation: newReservation.toObject(),
@@ -781,7 +896,6 @@ export const createReservation = async (req, res) => {
         });
     }
 
-    // 알림톡 전송
     try {
       const shortReservationNumber = `WEB-${reservationId.slice(-8)}`;
       await sendReservationNotification(
@@ -1155,6 +1269,11 @@ export const resetCustomerPassword = async (req, res) => {
 
 export const logoutCustomer = async (req, res) => {
   try {
+    const customer = req.customer;
+    if (customer) {
+      customer.refreshToken = null;
+      await customer.save();
+    }
     logger.info(`Customer logged out: ${req.customer?.email || 'unknown'}`);
     res.json({ message: '로그아웃 성공' });
   } catch (error) {
@@ -1170,14 +1289,15 @@ export const logoutCustomer = async (req, res) => {
   }
 };
 
-
 export const getSocialLoginSettings = async (req, res) => {
   try {
-    let hotelSettings = await HotelSettingsModel.findOne({}, 'socialLoginSettings').lean();
+    let hotelSettings = await HotelSettingsModel.findOne(
+      {},
+      'socialLoginSettings'
+    ).lean();
     if (!hotelSettings) {
-      // HotelSettings 데이터가 없으면 초기 데이터 생성
       hotelSettings = new HotelSettingsModel({
-        hotelId: 'default', // 기본 호텔 ID 설정 (필요 시 수정)
+        hotelId: 'default',
         socialLoginSettings: {
           kakao: {
             enabled: false,
@@ -1190,7 +1310,47 @@ export const getSocialLoginSettings = async (req, res) => {
     }
     res.status(200).json(hotelSettings.socialLoginSettings);
   } catch (error) {
-    logger.error(`Error fetching social login settings: ${error.message}`, error);
-    res.status(500).json({ message: '서버 오류가 발생했습니다.', error: error.message });
+    logger.error(
+      `Error fetching social login settings: ${error.message}`,
+      error
+    );
+    res
+      .status(500)
+      .json({ message: '서버 오류가 발생했습니다.', error: error.message });
+  }
+};
+
+export const refreshCustomerToken = async (req, res) => {
+  const { refreshToken } = req.body;
+
+  if (!refreshToken) {
+    logger.warn('No refresh token provided');
+    return res.status(401).json({ message: 'Refresh token is required' });
+  }
+
+  try {
+    const decoded = jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET);
+    const customer = await Customer.findById(decoded.id).select('-password');
+    if (!customer) {
+      logger.warn(`Customer not found for id: ${decoded.id}`);
+      return res
+        .status(401)
+        .json({ message: 'Unauthorized, customer not found' });
+    }
+
+    logger.info(
+      `Stored refreshToken: ${customer.refreshToken}, Provided refreshToken: ${refreshToken}`
+    );
+    if (customer.refreshToken !== refreshToken) {
+      logger.warn(`Invalid refresh token for customer: ${customer.email}`);
+      return res.status(401).json({ message: 'Invalid refresh token' });
+    }
+
+    const newToken = generateCustomerToken(customer);
+    logger.info(`Customer token refreshed: ${customer.email}`);
+    res.status(200).json({ token: newToken });
+  } catch (error) {
+    logger.error(`Customer token refresh error: ${error.message}`, error);
+    res.status(401).json({ message: 'Unauthorized, refresh token failed' });
   }
 };

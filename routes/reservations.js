@@ -6,36 +6,38 @@ import {
   updateReservation,
   deleteReservation,
   getCanceledReservations,
-  payPartial, // 새 컨트롤러 함수 추가
-  payPerNight, // 새 컨트롤러 함수 추가
+  payPartial,
+  payPerNight,
 } from '../controllers/reservationsController.js';
 import asyncHandler from '../utils/asyncHandler.js';
-import { protect } from '../middleware/authMiddleware.js';
+import { protectOrProtectCustomer } from '../middleware/authMiddleware.js';
+import { verifyCsrfToken } from '../middleware/csrfMiddleware.js';
+import ensureConsent from '../middleware/consentMiddleware.js';
 
 const router = express.Router();
 
 // 정상 예약 목록 조회
-router.get('/', protect, asyncHandler(getReservations));
+router.get('/', protectOrProtectCustomer, ensureConsent, asyncHandler(getReservations));
 
 // 취소된 예약 목록 조회
-router.get('/canceled', protect, asyncHandler(getCanceledReservations));
+router.get('/canceled', protectOrProtectCustomer, ensureConsent, asyncHandler(getCanceledReservations));
 
 // 예약 생성 또는 업데이트
-router.post('/', protect, asyncHandler(createOrUpdateReservations));
+router.post('/', protectOrProtectCustomer, ensureConsent, verifyCsrfToken, asyncHandler(createOrUpdateReservations));
 
 // 특정 예약 수정
-router.patch('/:reservationId', protect, asyncHandler(updateReservation));
+router.patch('/:reservationId', protectOrProtectCustomer, ensureConsent, verifyCsrfToken, asyncHandler(updateReservation));
 
 // 특정 예약 삭제
-router.delete('/:reservationId', protect, asyncHandler(deleteReservation));
+router.delete('/:reservationId', protectOrProtectCustomer, ensureConsent, verifyCsrfToken, asyncHandler(deleteReservation));
 
 // 특정 예약 확정
-router.post('/:reservationId/confirm', protect, asyncHandler(confirmReservation));
+router.post('/:reservationId/confirm', protectOrProtectCustomer, ensureConsent, verifyCsrfToken, asyncHandler(confirmReservation));
 
 // 부분 결제 처리
-router.post('/:reservationId/pay-partial', protect, asyncHandler(payPartial));
+router.post('/:reservationId/pay-partial', protectOrProtectCustomer, ensureConsent, verifyCsrfToken, asyncHandler(payPartial));
 
 // 1박씩 결제 처리
-router.post('/pay-per-night/:reservationId', protect, asyncHandler(payPerNight));
+router.post('/pay-per-night/:reservationId', protectOrProtectCustomer, ensureConsent, verifyCsrfToken, asyncHandler(payPerNight));
 
 export default router;

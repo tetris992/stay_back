@@ -26,7 +26,11 @@ import { Server } from 'socket.io';
 import jwt from 'jsonwebtoken';
 import Customer from './models/Customer.js';
 import { randomBytes } from 'crypto';
-import { verifyCsrfToken, generateCsrfToken } from './middleware/csrfMiddleware.js'; // 분리한 CSRF 미들웨어 임포트
+import multer from 'multer';
+import {
+  verifyCsrfToken,
+  generateCsrfToken,
+} from './middleware/csrfMiddleware.js'; // 분리한 CSRF 미들웨어 임포트
 
 dotenv.config();
 
@@ -35,10 +39,25 @@ const PORT = process.env.PORT || 3003;
 
 console.log('Loaded NODE_ENV:', NODE_ENV);
 console.log('PORT from .env:', process.env.PORT || PORT);
-console.log('EXTENSION_ID:', process.env.EXTENSION_ID || 'Default Extension ID');
+console.log(
+  'EXTENSION_ID:',
+  process.env.EXTENSION_ID || 'Default Extension ID'
+);
 console.log('CORS_ORIGIN from .env:', process.env.CORS_ORIGIN);
 
 const app = express();
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB 제한
+  fileFilter: (req, file, cb) => {
+    const ALLOWED_FORMATS = ['image/jpeg', 'image/png', 'image/webp'];
+    if (!ALLOWED_FORMATS.includes(file.mimetype)) {
+      return cb(new Error('허용된 파일 형식: JPEG, PNG, WebP'));
+    }
+    cb(null, true);
+  },
+});
 
 app.use(helmet());
 app.use(mongoSanitize());
@@ -151,7 +170,9 @@ app.get('/api/csrf-token', async (req, res) => {
       headers: req.headers,
       ip: req.ip,
     });
-    res.status(500).json({ message: 'Failed to generate CSRF token', error: error.message });
+    res
+      .status(500)
+      .json({ message: 'Failed to generate CSRF token', error: error.message });
   }
 });
 
@@ -177,13 +198,9 @@ app.use(
   reservationsExtensionRoutes
 );
 app.use('/api/auth', authRoutes);
-app.use(
-  '/api/hotel-settings',
-  protect,
-  ensureConsent,
-  verifyCsrfToken,
-  hotelSettingsRoutes
-);
+
+app.use('/api/hotel-settings', upload.array('photo', 10), hotelSettingsRoutes);
+
 app.use('/api/customer', verifyCsrfToken, customerRoutes);
 
 // 호텔 사진 관련 라우트는 호텔 설정에 통합되었으므로 별도 라우트는 제거됨
@@ -210,9 +227,16 @@ app.get('/', (req, res) => {
 
 // 전역 에러 핸들러
 app.use((err, req, res, next) => {
+  if (err instanceof multer.MulterError) {
+    logger.error(`Multer error: ${err.message}`, err);
+    return res
+      .status(400)
+      .json({ message: '파일 업로드 오류', error: err.message });
+  }
   logger.error(`Unhandled Error: ${err.message}`, err);
   const statusCode = err.statusCode || 500;
-  const message = NODE_ENV === 'development' ? err.message : 'Internal Server Error';
+  const message =
+    NODE_ENV === 'development' ? err.message : 'Internal Server Error';
   res.status(statusCode).json({
     message,
     stack: NODE_ENV === 'development' ? err.stack : undefined,
@@ -259,46 +283,70 @@ const startServer = async () => {
   io.use(async (socket, next) => {
     const { hotelId, accessToken, customerToken } = socket.handshake.query;
 
-    if (customerToken) {
+    if (accessToken || customerToken) {
       try {
-        const decoded = jwt.verify(customerToken, process.env.JWT_SECRET);
+        const token = accessToken || customerToken;
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
         logger.info(`Decoded JWT: ${JSON.stringify(decoded)}`);
-        const customer = await Customer.findById(decoded.id);
-        if (!customer) {
-          logger.warn(`Customer not found for id: ${decoded.id}, client: ${socket.id}`);
-          return next(new Error('Authentication error: Customer not found'));
+
+        if (decoded.hotelId) {
+          const user = await User.findOne({ hotelId: decoded.hotelId });
+          if (!user) {
+            logger.warn(
+              `User not found for hotelId: ${decoded.hotelId}, client: ${socket.id}`
+            );
+            return next(new Error('Authentication error: User not found'));
+          }
+          socket.user = user;
+          socket.type = 'hotel';
+          logger.info(
+            `Authenticated WebSocket client: ${socket.id}, userId: ${user._id}`
+          );
+        } else if (decoded.id) {
+          const customer = await Customer.findById(decoded.id);
+          if (!customer) {
+            logger.warn(
+              `Customer not found for id: ${decoded.id}, client: ${socket.id}`
+            );
+            return next(new Error('Authentication error: Customer not found'));
+          }
+          socket.customer = customer;
+          socket.type = 'customer';
+          logger.info(
+            `Authenticated WebSocket customer: ${socket.id}, customerId: ${customer._id}`
+          );
+        } else {
+          logger.warn('Invalid token structure');
+          return next(
+            new Error('Authentication error: Invalid token structure')
+          );
         }
-        socket.customer = customer;
-        socket.type = 'customer';
-        logger.info(`Authenticated WebSocket customer: ${socket.id}, customerId: ${customer._id}`);
         return next();
       } catch (error) {
-        logger.error(`Invalid customer token for client ${socket.id}: ${error.message}`, { error, customerToken });
-        return next(new Error('Authentication error: Invalid customer token'));
+        logger.error(
+          `Invalid token for client ${socket.id}: ${error.message}`,
+          { error, token }
+        );
+        return next(new Error('Authentication error: Invalid token'));
       }
     }
 
-    if (hotelId && accessToken) {
-      try {
-        const decoded = jwt.verify(accessToken, process.env.JWT_SECRET);
-        logger.info(`Decoded JWT: ${JSON.stringify(decoded)}`);
-        socket.user = decoded;
-        socket.type = 'hotel';
-        logger.info(`Authenticated WebSocket client: ${socket.id}, userId: ${decoded.id}`);
-        return next();
-      } catch (error) {
-        logger.error(`Invalid access token for client ${socket.id}: ${error.message}`, { error, accessToken });
-        return next(new Error('Authentication error: Invalid access token'));
-      }
-    }
-
-    logger.warn('Missing hotelId/accessToken or customerToken, disconnecting client:', socket.id);
-    return next(new Error('Authentication error: Missing hotelId/accessToken or customerToken'));
+    logger.warn(
+      'Missing hotelId/accessToken or customerToken, disconnecting client:',
+      socket.id
+    );
+    return next(
+      new Error(
+        'Authentication error: Missing hotelId/accessToken or customerToken'
+      )
+    );
   });
 
   io.on('connection', (socket) => {
     const { hotelId } = socket.handshake.query;
-    logger.info(`New client connected: ${socket.id}, type: ${socket.type}, hotelId: ${hotelId}`);
+    logger.info(
+      `New client connected: ${socket.id}, type: ${socket.type}, hotelId: ${hotelId}`
+    );
 
     if (hotelId) {
       socket.join(hotelId);
@@ -313,20 +361,28 @@ const startServer = async () => {
     if (socket.type === 'customer') {
       socket.on('subscribeToReservationUpdates', (customerId) => {
         socket.join(`customer_${customerId}`);
-        logger.info(`Client ${socket.id} subscribed to reservation updates for customer: ${customerId}`);
+        logger.info(
+          `Client ${socket.id} subscribed to reservation updates for customer: ${customerId}`
+        );
       });
     }
 
     socket.on('createReservation', async (reservationData) => {
-      socket.emit('error', { message: 'Use HTTP endpoint to create reservations' });
+      socket.emit('error', {
+        message: 'Use HTTP endpoint to create reservations',
+      });
     });
 
     socket.on('updateReservation', async ({ reservationId, updatedData }) => {
-      socket.emit('error', { message: 'Use HTTP endpoint to update reservations' });
+      socket.emit('error', {
+        message: 'Use HTTP endpoint to update reservations',
+      });
     });
 
     socket.on('deleteReservation', async (reservationId) => {
-      socket.emit('error', { message: 'Use HTTP endpoint to delete reservations' });
+      socket.emit('error', {
+        message: 'Use HTTP endpoint to delete reservations',
+      });
     });
 
     socket.on('connect_error', (error) => {
