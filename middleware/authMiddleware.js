@@ -8,7 +8,7 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-export const protect = async (req, res, next) => {
+export const protect = async (req, res, next) => {  // 호텔 관리자 인증 미들웨어
   let token;
 
   if (

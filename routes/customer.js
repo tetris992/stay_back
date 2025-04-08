@@ -17,6 +17,9 @@ import {
   logoutCustomer,
   getSocialLoginSettings,
   refreshCustomerToken,
+  updateCustomer, // 추가
+  getAgreements, // 추가
+  checkDuplicate,
 } from '../controllers/customerController.js';
 
 const router = express.Router();
@@ -31,10 +34,16 @@ router.post('/login/social/:provider', asyncHandler(loginCustomerSocial));
 router.post('/logout', protectCustomer, asyncHandler(logoutCustomer));
 
 // 리프레시 토큰 엔드포인트 추가
-router.post(
-  '/refresh-token',
-  asyncHandler(refreshCustomerToken)
-);
+router.post('/refresh-token', asyncHandler(refreshCustomerToken));
+
+// 회원 정보 수정 (추가)
+router.put('/update', protectCustomer, asyncHandler(updateCustomer));
+
+// 동의 내역 조회 (추가)
+router.get('/agreements', protectCustomer, asyncHandler(getAgreements));
+
+// 중복 내역 조회 (추가)
+router.get('/check-duplicate', asyncHandler(checkDuplicate));
 
 // 회원가입
 router.post('/register', asyncHandler(registerCustomer));

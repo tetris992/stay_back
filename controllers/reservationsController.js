@@ -570,16 +570,36 @@ export const deleteReservation = async (req, res) => {
       siteName,
     });
 
-    if (!reservation)
+    if (!reservation) {
+      logger.warn(`[deleteReservation] Reservation not found: ${reservationId}`);
       return res.status(404).send({ message: '해당 예약을 찾을 수 없습니다.' });
-
-    if (req.app.get('io')) {
-      req.app
-        .get('io')
-        .to(finalHotelId)
-        .emit('reservationDeleted', { reservationId });
     }
 
+    // 삭제된 예약의 세부 정보 로깅
+    const { customerName, phoneNumber, checkIn, checkOut } = reservation;
+    logger.info(`[deleteReservation] Reservation deleted: ${reservationId}`, {
+      siteName,
+      customerName: customerName || '정보 없음',
+      phoneNumber: phoneNumber || '정보 없음',
+      checkIn: checkIn || '정보 없음',
+      checkOut: checkOut || '정보 없음',
+    });
+
+    // WebSocket 이벤트에 삭제된 예약의 세부 정보 포함
+    if (req.app.get('io')) {
+      req.app.get('io').to(finalHotelId).emit('reservationDeleted', {
+        reservationId,
+        reservation: {
+          customerName: customerName || '정보 없음',
+          phoneNumber: phoneNumber || '정보 없음',
+          checkIn: checkIn || '정보 없음',
+          checkOut: checkOut || '정보 없음',
+          siteName: siteName || '알 수 없음',
+        },
+      });
+    }
+
+    // 알림톡 전송 (현장예약인 경우)
     if (siteName === '현장예약' && reservation.type === 'stay') {
       try {
         const shortReservationNumber = getShortReservationNumber(
@@ -674,9 +694,6 @@ export const updateReservation = async (req, res) => {
   if (!reservationId) {
     return res.status(400).send({ message: 'reservationId는 필수입니다.' });
   }
-  if (!selectedDate) {
-    return res.status(400).send({ message: 'selectedDate는 필수입니다.' });
-  }
 
   try {
     const Reservation = getReservationModel(finalHotelId);
@@ -716,11 +733,13 @@ export const updateReservation = async (req, res) => {
         roomNumber: newRoomNumber,
         _id: reservationId,
       };
+      // selectedDate가 없으면 현재 날짜를 기본값으로 사용
+      const conflictCheckDate = selectedDate ? new Date(selectedDate) : new Date();
       const { isConflict, conflictReservation = {} } = checkConflict(
         reservationDataForConflict,
         newRoomNumber,
         allReservations,
-        new Date(selectedDate)
+        conflictCheckDate
       );
 
       if (isConflict) {

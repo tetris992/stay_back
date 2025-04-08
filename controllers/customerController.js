@@ -17,6 +17,8 @@ import {
   differenceInCalendarDays,
 } from 'date-fns';
 
+import axios from 'axios';
+
 const sanitizePhoneNumber = (phoneNumber) =>
   phoneNumber ? phoneNumber.replace(/\D/g, '') : '';
 
@@ -96,37 +98,30 @@ export const loginCustomerSocial = async (req, res) => {
   const { provider } = req.params;
   const { providerId, name, email, phoneNumber, idToken } = req.body;
 
-  if (!['kakao', 'naver', 'google'].includes(provider)) {
+  if (provider !== 'kakao') {
     logger.warn(`Invalid social login provider: ${provider}`);
     return res
       .status(400)
-      .json({ message: '지원하지 않는 소셜 로그인 제공자입니다.' });
+      .json({ message: '현재는 카카오 로그인만 지원됩니다.' });
   }
 
-  if (provider === 'kakao') {
-    const hotelSettings = await HotelSettingsModel.findOne(
-      {},
-      'socialLoginSettings'
-    ).lean();
-    if (!hotelSettings || !hotelSettings.socialLoginSettings?.kakao?.enabled) {
-      logger.warn(`Kakao login is disabled`);
-      return res
-        .status(403)
-        .json({ message: 'Kakao 로그인은 현재 비활성화되어 있습니다.' });
-    }
-  }
-
-  if (provider === 'naver' || provider === 'google') {
-    logger.info(`Social login for ${provider} is not implemented yet`);
+  const hotelSettings = await HotelSettingsModel.findOne(
+    {},
+    'socialLoginSettings'
+  ).lean();
+  if (!hotelSettings || !hotelSettings.socialLoginSettings?.kakao?.enabled) {
+    logger.warn(`Kakao login is disabled`);
     return res
-      .status(400)
-      .json({ message: `현재 ${provider} 로그인은 지원되지 않습니다.` });
+      .status(403)
+      .json({ message: 'Kakao 로그인은 현재 비활성화되어 있습니다.' });
   }
 
   const trimmedProviderId =
     typeof providerId === 'string' ? providerId.trim() : '';
   const trimmedName = typeof name === 'string' ? name.trim() : '';
   const trimmedEmail = typeof email === 'string' ? email.trim() : '';
+  const trimmedPhoneNumber =
+    typeof phoneNumber === 'string' ? phoneNumber.trim() : '';
 
   if (!trimmedProviderId || !trimmedName || !trimmedEmail) {
     logger.warn(
@@ -138,34 +133,61 @@ export const loginCustomerSocial = async (req, res) => {
   }
 
   try {
+    // 카카오 REST API 키를 사용하여 사용자 정보 검증 (선택 사항)
+    if (idToken) {
+      const KAKAO_REST_API_KEY = process.env.REACT_APP_KAKAO_REST_API_KEY;
+      const response = await axios.get('https://kapi.kakao.com/v2/user/me', {
+        headers: {
+          Authorization: `Bearer ${idToken}`,
+          'Content-Type': 'application/x-www-form-urlencoded;charset=utf-8',
+        },
+      });
+      logger.info(`Kakao user info verified: ${response.data.id}`);
+      if (response.data.id.toString() !== trimmedProviderId) {
+        logger.warn(
+          `Provider ID mismatch: received=${trimmedProviderId}, verified=${response.data.id}`
+        );
+        return res
+          .status(400)
+          .json({ message: '카카오 사용자 정보가 일치하지 않습니다.' });
+      }
+    }
+
     let customer = await Customer.findOne({
       'socialLogin.provider': provider,
       'socialLogin.providerId': trimmedProviderId,
     });
 
     if (!customer) {
+      // 회원가입: 새로운 고객 생성
       customer = new Customer({
         name: trimmedName,
         email: trimmedEmail,
-        phoneNumber: phoneNumber || `social-${provider}-${trimmedProviderId}`,
+        phoneNumber:
+          trimmedPhoneNumber || `social-${provider}-${trimmedProviderId}`,
         socialLogin: { provider, providerId: trimmedProviderId },
       });
       await customer.save();
       logger.info(
         `New customer created via social login: ${customer.email}, provider: ${provider}`
       );
+    } else {
+      // 기존 고객 정보 업데이트
+      if (trimmedEmail && !customer.email.includes('@example.com')) {
+        customer.email = trimmedEmail;
+      }
+      if (trimmedPhoneNumber) {
+        customer.phoneNumber = trimmedPhoneNumber;
+      }
+      customer.name = trimmedName;
     }
 
-    if (provider === 'kakao' && idToken) {
-      const hotelSettings = await HotelSettingsModel.findOne(
-        {},
-        'socialLoginSettings'
-      ).lean();
-      if (hotelSettings?.socialLoginSettings?.kakao?.openIdConnectEnabled) {
-        logger.info(`Kakao ID Token received: ${idToken}`);
-        customer.openIdData = { idToken };
-        await customer.save();
-      }
+    if (
+      idToken &&
+      hotelSettings?.socialLoginSettings?.kakao?.openIdConnectEnabled
+    ) {
+      logger.info(`Kakao ID Token received: ${idToken}`);
+      customer.openIdData = { idToken };
     }
 
     const token = generateCustomerToken(customer);
@@ -369,13 +391,22 @@ export const connectSocialAccount = async (req, res) => {
 };
 
 export const registerCustomer = async (req, res) => {
-  const { name, phoneNumber, email, password, consentChecked } = req.body;
+  const { name, phoneNumber, email, password, agreements } = req.body;
 
+  // 필수 항목 검증
   if (!name || !password) {
     logger.warn(
       `Missing required fields for registration: name=${name}, password=${password}`
     );
     return res.status(400).json({ message: '이름과 비밀번호는 필수입니다.' });
+  }
+
+  // 동의 항목 검증
+  if (!agreements || !agreements.terms || !agreements.privacy) {
+    logger.warn(
+      `Missing required agreements: terms=${agreements?.terms}, privacy=${agreements?.privacy}`
+    );
+    return res.status(400).json({ message: '필수 약관에 동의해야 합니다.' });
   }
 
   try {
@@ -386,9 +417,13 @@ export const registerCustomer = async (req, res) => {
       logger.warn(
         `Duplicate phoneNumber or email: phoneNumber=${phoneNumber}, email=${email}`
       );
-      return res
-        .status(409)
-        .json({ message: '이미 가입된 전화번호 또는 이메일입니다.' });
+      return res.status(409).json({
+        message: '이미 가입된 전화번호 또는 이메일입니다.',
+        details: {
+          phoneNumber: existingCustomer.phoneNumber === phoneNumber ? '이미 사용 중인 전화번호입니다.' : null,
+          email: existingCustomer.email === email ? '이미 사용 중인 이메일입니다.' : null,
+        },
+      });
     }
 
     let finalPhoneNumber = '01000000000';
@@ -398,11 +433,18 @@ export const registerCustomer = async (req, res) => {
 
     const customer = new Customer({
       name,
-      phoneNumber,
+      phoneNumber: finalPhoneNumber,
       email,
       password,
-      consentChecked: !!consentChecked,
+      agreements: {
+        terms: agreements.terms,
+        privacy: agreements.privacy,
+        marketing: agreements.marketing || false,
+        agreedAt: new Date(),
+        termsVersion: '2025.04.08', // 현재 약관 버전
+      },
     });
+
     const token = generateCustomerToken(customer);
     const refreshToken = generateRefreshToken(customer);
     customer.refreshToken = refreshToken;
@@ -411,9 +453,60 @@ export const registerCustomer = async (req, res) => {
     res.status(201).json({ token, refreshToken, customer });
   } catch (error) {
     logger.error(`Customer registration error: ${error.message}`, error);
-    res
-      .status(500)
-      .json({ message: '서버 오류가 발생했습니다.', error: error.message });
+    res.status(500).json({
+      message: '서버 오류가 발생했습니다.',
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined,
+    });
+  }
+};
+
+export const updateCustomer = async (req, res) => {
+  try {
+    const customerId = req.customer._id; // 인증된 사용자 ID
+    const { agreements } = req.body;
+
+    // 필수 동의 항목 검증
+    if (agreements && (!agreements.terms || !agreements.privacy)) {
+      return res.status(400).json({ message: '필수 약관에 동의해야 합니다.' });
+    }
+
+    const customer = await Customer.findById(customerId);
+    if (!customer) {
+      return res.status(404).json({ message: '고객을 찾을 수 없습니다.' });
+    }
+
+    // 동의 항목 업데이트
+    if (agreements) {
+      customer.agreements = {
+        terms: agreements.terms,
+        privacy: agreements.privacy,
+        marketing: agreements.marketing || false,
+        agreedAt: new Date(),
+        termsVersion: '2025.04.08',
+      };
+    }
+
+    await customer.save();
+    logger.info(`Customer agreements updated: ${customer.email}`);
+    res.status(200).json({ message: '동의 항목이 업데이트되었습니다.', customer });
+  } catch (error) {
+    logger.error('Customer update failed:', error);
+    res.status(500).json({ message: error.message || '업데이트에 실패했습니다.' });
+  }
+};
+
+export const getAgreements = async (req, res) => {
+  try {
+    const customerId = req.customer._id; // 인증된 사용자 ID
+    const customer = await Customer.findById(customerId).select('agreements');
+    if (!customer) {
+      return res.status(404).json({ message: '고객을 찾을 수 없습니다.' });
+    }
+    res.status(200).json(customer.agreements);
+  } catch (error) {
+    logger.error('Fetch agreements failed:', error);
+    res.status(500).json({ message: error.message || '동의 내역 조회에 실패했습니다.' });
   }
 };
 
@@ -1352,5 +1445,41 @@ export const refreshCustomerToken = async (req, res) => {
   } catch (error) {
     logger.error(`Customer token refresh error: ${error.message}`, error);
     res.status(401).json({ message: 'Unauthorized, refresh token failed' });
+  }
+};
+
+// 중복 체크 엔드포인트 추가
+export const checkDuplicate = async (req, res) => {
+  const { phoneNumber, email } = req.body;
+
+  if (!phoneNumber && !email) {
+    return res.status(400).json({ message: '전화번호 또는 이메일이 필요합니다.' });
+  }
+
+  try {
+    const existingCustomer = await Customer.findOne({
+      $or: [{ phoneNumber }, { email }],
+    });
+
+    if (existingCustomer) {
+      logger.warn(
+        `Duplicate check found: phoneNumber=${phoneNumber}, email=${email}`
+      );
+      return res.status(200).json({
+        isDuplicate: true,
+        details: {
+          phoneNumber: existingCustomer.phoneNumber === phoneNumber ? '이미 사용 중인 전화번호입니다.' : null,
+          email: existingCustomer.email === email ? '이미 사용 중인 이메일입니다.' : null,
+        },
+      });
+    }
+
+    return res.status(200).json({ isDuplicate: false });
+  } catch (error) {
+    logger.error(`Duplicate check error: ${error.message}`, error);
+    return res.status(500).json({
+      message: '서버 오류가 발생했습니다.',
+      error: error.message,
+    });
   }
 };

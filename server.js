@@ -26,11 +26,12 @@ import { Server } from 'socket.io';
 import jwt from 'jsonwebtoken';
 import Customer from './models/Customer.js';
 import { randomBytes } from 'crypto';
+import mongoose from 'mongoose';
 import multer from 'multer';
 import {
   verifyCsrfToken,
   generateCsrfToken,
-} from './middleware/csrfMiddleware.js'; // 분리한 CSRF 미들웨어 임포트
+} from './middleware/csrfMiddleware.js';
 
 dotenv.config();
 
@@ -49,7 +50,7 @@ const app = express();
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB 제한
+  limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     const ALLOWED_FORMATS = ['image/jpeg', 'image/png', 'image/webp'];
     if (!ALLOWED_FORMATS.includes(file.mimetype)) {
@@ -149,7 +150,6 @@ app.options(
 app.use(cookieParser());
 app.use(express.json());
 
-// 요청 로깅 미들웨어
 app.use((req, res, next) => {
   logger.info(`Request: ${req.method} ${req.url}`, {
     headers: req.headers,
@@ -159,7 +159,6 @@ app.use((req, res, next) => {
   next();
 });
 
-// CSRF 토큰 생성 엔드포인트 (분리한 미들웨어의 generateCsrfToken 사용)
 app.get('/api/csrf-token', async (req, res) => {
   try {
     const { tokenId, csrfToken } = generateCsrfToken();
@@ -176,7 +175,6 @@ app.get('/api/csrf-token', async (req, res) => {
   }
 });
 
-// 각 라우트에 인증, 동의, CSRF 검증 미들웨어 적용
 app.use(
   '/api/reservations',
   protect,
@@ -199,11 +197,19 @@ app.use(
 );
 app.use('/api/auth', authRoutes);
 
+// GET 요청에 대해 CSRF 검증 제외
+app.use(
+  '/api/customer',
+  (req, res, next) => {
+    if (req.method === 'GET') {
+      return next();
+    }
+    return verifyCsrfToken(req, res, next);
+  },
+  customerRoutes
+);
+
 app.use('/api/hotel-settings', upload.array('photo', 10), hotelSettingsRoutes);
-
-app.use('/api/customer', verifyCsrfToken, customerRoutes);
-
-// 호텔 사진 관련 라우트는 호텔 설정에 통합되었으므로 별도 라우트는 제거됨
 
 app.use(
   rateLimit({
@@ -225,7 +231,6 @@ app.get('/', (req, res) => {
   res.status(200).send('OK - HMS Backend is running');
 });
 
-// 전역 에러 핸들러
 app.use((err, req, res, next) => {
   if (err instanceof multer.MulterError) {
     logger.error(`Multer error: ${err.message}`, err);
@@ -278,6 +283,10 @@ const startServer = async () => {
     transports: ['websocket', 'polling'],
     pingTimeout: 20000,
     pingInterval: 25000,
+    reconnection: true,
+    reconnectionAttempts: 5,
+    reconnectionDelay: 1000,
+    reconnectionDelayMax: 5000,
   });
 
   io.use(async (socket, next) => {
@@ -401,17 +410,23 @@ const startServer = async () => {
 
   process.on('SIGINT', () => {
     logger.info('Gracefully shutting down server...');
-    server.close(() => {
-      logger.info('Server closed.');
-      process.exit(0);
+    mongoose.connection.close(() => {
+      logger.info('MongoDB connection closed.');
+      server.close(() => {
+        logger.info('Server closed.');
+        process.exit(0);
+      });
     });
   });
 
   process.on('SIGTERM', () => {
     logger.info('Gracefully shutting down server...');
-    server.close(() => {
-      logger.info('Server closed.');
-      process.exit(0);
+    mongoose.connection.close(() => {
+      logger.info('MongoDB connection closed.');
+      server.close(() => {
+        logger.info('Server closed.');
+        process.exit(0);
+      });
     });
   });
 };

@@ -1,4 +1,3 @@
-// backend/models/Customer.js
 import mongoose from 'mongoose';
 import bcrypt from 'bcrypt';
 
@@ -41,8 +40,6 @@ const CustomerSchema = new mongoose.Schema(
       },
       minlength: [4, '비밀번호는 최소 4자 이상이어야 합니다.'],
     },
-
-    
     isAdultVerified: {
       type: Boolean,
       default: false,
@@ -80,10 +77,36 @@ const CustomerSchema = new mongoose.Schema(
         used: { type: Boolean, default: false },
       },
     ],
+    // 동의 항목 추가
+    agreements: {
+      terms: {
+        type: Boolean,
+        required: [true, '서비스 이용약관 동의는 필수입니다.'],
+        default: false,
+      },
+      privacy: {
+        type: Boolean,
+        required: [true, '개인정보 수집 및 이용 동의는 필수입니다.'],
+        default: false,
+      },
+      marketing: {
+        type: Boolean,
+        default: false, // 선택 항목
+      },
+      agreedAt: {
+        type: Date,
+        default: Date.now, // 동의한 시간 기록
+      },
+      termsVersion: {
+        type: String,
+        default: '2025.04.08', // 약관 버전 기록
+      },
+    },
   },
   { timestamps: true }
 );
 
+// 전화번호 형식 정규화
 CustomerSchema.pre('save', function (next) {
   if (this.isModified('phoneNumber') && this.phoneNumber) {
     let cleaned = this.phoneNumber.replace(/\D/g, '');
@@ -104,6 +127,7 @@ CustomerSchema.pre('save', function (next) {
   next();
 });
 
+// 비밀번호 해싱
 CustomerSchema.pre('save', async function (next) {
   if (!this.isModified('password') || !this.password) {
     return next();
