@@ -680,7 +680,8 @@ export const confirmReservation = async (req, res) => {
 
 export const updateReservation = async (req, res) => {
   const { reservationId } = req.params;
-  const { hotelId, roomNumber, selectedDate, ...updateData } = req.body;
+  // 클라이언트에서 보내는 데이터에서 selectedDate 제외
+  const { hotelId, roomNumber, ...updateData } = req.body;
 
   const user = req.user || req.customer;
   if (!user) {
@@ -710,11 +711,10 @@ export const updateReservation = async (req, res) => {
     const newRoomNumber = roomNumber || updateData.roomNumber;
 
     if (newRoomNumber && !newRoomNumber.trim()) {
-      return res
-        .status(400)
-        .send({ message: '유효한 객실 번호를 입력하세요.' });
+      return res.status(400).send({ message: '유효한 객실 번호를 입력하세요.' });
     }
 
+    // 객실 번호 변경 시 충돌 검사
     if (updateData.manuallyCheckedOut === true) {
       reservation.manuallyCheckedOut = true;
       reservation.roomNumber = '';
@@ -733,15 +733,14 @@ export const updateReservation = async (req, res) => {
         roomNumber: newRoomNumber,
         _id: reservationId,
       };
-      // selectedDate가 없으면 현재 날짜를 기본값으로 사용
-      const conflictCheckDate = selectedDate ? new Date(selectedDate) : new Date();
+      // 충돌 검사는 현재 날짜를 기준으로 진행
+      const conflictCheckDate = new Date();
       const { isConflict, conflictReservation = {} } = checkConflict(
         reservationDataForConflict,
         newRoomNumber,
         allReservations,
         conflictCheckDate
       );
-
       if (isConflict) {
         const conflictCheckIn = conflictReservation.checkIn
           ? format(new Date(conflictReservation.checkIn), 'yyyy-MM-dd HH:mm')
@@ -758,6 +757,7 @@ export const updateReservation = async (req, res) => {
       }
     }
 
+    // 업데이트 데이터 적용
     Object.keys(updateData).forEach((key) => {
       reservation[key] = updateData[key];
     });
