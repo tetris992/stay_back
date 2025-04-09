@@ -1,23 +1,23 @@
 import mongoose from 'mongoose';
-import bcrypt from 'bcrypt';
 
 const CustomerSchema = new mongoose.Schema(
   {
-    name: {
+    nickname: {
       type: String,
-      required: true,
       trim: true,
-      minlength: [2, '이름은 최소 2자 이상이어야 합니다.'],
-      maxlength: [50, '이름은 최대 50자 이하여야 합니다.'],
+      minlength: [2, '닉네임은 최소 2자 이상이어야 합니다.'],
+      maxlength: [50, '닉네임은 최대 50자 이하여야 합니다.'],
+      unique: true,
+      sparse: true,
+      index: true,
     },
     phoneNumber: {
       type: String,
+      required: [true, '전화번호는 필수입니다.'],
       unique: true,
       trim: true,
-      default: '01000000000',
       validate: {
         validator: function (v) {
-          if (!v) return true;
           const cleaned = v.replace(/\D/g, '');
           return cleaned.length >= 10 && cleaned.length <= 11;
         },
@@ -29,16 +29,25 @@ const CustomerSchema = new mongoose.Schema(
       type: String,
       unique: true,
       lowercase: true,
-      default: 'default@example.com',
+      sparse: true,
       match: [/^\S+@\S+\.\S+$/, '유효한 이메일 주소를 입력해주세요.'],
       index: true,
     },
-    password: {
+    ageRange: {
       type: String,
-      required: function () {
-        return !this.socialLogin.provider;
-      },
-      minlength: [4, '비밀번호는 최소 4자 이상이어야 합니다.'],
+      enum: ['10대', '20대', '30대', '40대', '50대 이상', null],
+      default: null,
+    },
+    name: {
+      type: String,
+      trim: true,
+      minlength: [2, '이름은 최소 2자 이상이어야 합니다.'],
+      maxlength: [50, '이름은 최대 50자 이하여야 합니다.'],
+      default: null,
+    },
+    isActive: {
+      type: Boolean,
+      default: false,
     },
     isAdultVerified: {
       type: Boolean,
@@ -47,7 +56,7 @@ const CustomerSchema = new mongoose.Schema(
     socialLogin: {
       provider: {
         type: String,
-        enum: ['kakao', 'naver', 'google', null],
+        enum: ['kakao', null],
         default: null,
       },
       providerId: {
@@ -62,12 +71,12 @@ const CustomerSchema = new mongoose.Schema(
       {
         hotelId: { type: String, required: true },
         reservationId: { type: String, required: true },
-        visitCount: { type: Number, default: 1 }, // 호텔별 방문 횟수
+        visitCount: { type: Number, default: 1 },
       },
     ],
     totalVisits: {
       type: Number,
-      default: 0, // 총 방문 횟수
+      default: 0,
     },
     coupons: [
       {
@@ -77,29 +86,26 @@ const CustomerSchema = new mongoose.Schema(
         used: { type: Boolean, default: false },
       },
     ],
-    // 동의 항목 추가
     agreements: {
       terms: {
         type: Boolean,
-        required: [true, '서비스 이용약관 동의는 필수입니다.'],
         default: false,
       },
       privacy: {
         type: Boolean,
-        required: [true, '개인정보 수집 및 이용 동의는 필수입니다.'],
         default: false,
       },
       marketing: {
         type: Boolean,
-        default: false, // 선택 항목
+        default: false,
       },
       agreedAt: {
         type: Date,
-        default: Date.now, // 동의한 시간 기록
+        default: null,
       },
       termsVersion: {
         type: String,
-        default: '2025.04.08', // 약관 버전 기록
+        default: '2025.04.08',
       },
     },
   },
@@ -126,25 +132,6 @@ CustomerSchema.pre('save', function (next) {
   }
   next();
 });
-
-// 비밀번호 해싱
-CustomerSchema.pre('save', async function (next) {
-  if (!this.isModified('password') || !this.password) {
-    return next();
-  }
-  try {
-    const salt = await bcrypt.genSalt(10);
-    this.password = await bcrypt.hash(this.password, salt);
-    next();
-  } catch (error) {
-    next(error);
-  }
-});
-
-CustomerSchema.methods.comparePassword = async function (enteredPassword) {
-  if (!this.password) return false;
-  return await bcrypt.compare(enteredPassword, this.password);
-};
 
 CustomerSchema.index({
   'socialLogin.provider': 1,

@@ -206,6 +206,8 @@ export const registerHotel = async (req, res) => {
     amenities,
     photos,
     address,
+    latitude, // 추가
+    longitude, // 추가
     email,
     phoneNumber,
     hotelName,
@@ -302,6 +304,8 @@ export const registerHotel = async (req, res) => {
       checkInTime,
       checkOutTime,
       address,
+      latitude, // 추가
+      longitude, // 추가
       email,
       phoneNumber,
       hotelName,
@@ -345,6 +349,8 @@ export const updateHotelSettings = async (req, res) => {
     amenities,
     photos,
     address,
+    latitude, // 추가
+    longitude, // 추가
     email,
     phoneNumber,
     hotelName,
@@ -371,7 +377,6 @@ export const updateHotelSettings = async (req, res) => {
               nameEng: amenity.nameEng,
               icon: amenity.icon,
               type: amenity.type,
-              // false가 명시적으로 전달된 경우 그대로 저장 (undefined이면 false)
               isActive: amenity.isActive ?? false,
             }))
           : DEFAULT_AMENITIES.filter(
@@ -427,6 +432,8 @@ export const updateHotelSettings = async (req, res) => {
 
     if (photos !== undefined) updateData.photos = photos;
     if (address !== undefined) updateData.address = address;
+    if (latitude !== undefined) updateData.latitude = latitude; // 추가
+    if (longitude !== undefined) updateData.longitude = longitude; // 추가
     if (email !== undefined) updateData.email = email;
     if (phoneNumber !== undefined) updateData.phoneNumber = phoneNumber;
     if (hotelName !== undefined) updateData.hotelName = hotelName;

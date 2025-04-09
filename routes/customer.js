@@ -20,6 +20,7 @@ import {
   updateCustomer, // 추가
   getAgreements, // 추가
   checkDuplicate,
+  activateAccount,
 } from '../controllers/customerController.js';
 
 const router = express.Router();
@@ -43,10 +44,12 @@ router.put('/update', protectCustomer, asyncHandler(updateCustomer));
 router.get('/agreements', protectCustomer, asyncHandler(getAgreements));
 
 // 중복 내역 조회 (추가)
-router.get('/check-duplicate', asyncHandler(checkDuplicate));
+router.post('/check-duplicate', asyncHandler(checkDuplicate));
 
 // 회원가입
 router.post('/register', asyncHandler(registerCustomer));
+// 계정 활성화 (추가)
+router.post('/activate-account', asyncHandler(activateAccount));
 
 router.get(
   '/hotel-settings',

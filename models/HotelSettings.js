@@ -208,6 +208,8 @@ const HotelSettingsSchema = new mongoose.Schema(
       default: '11:00',
     },
     address: { type: String, default: '' },
+    latitude: { type: Number, default: null }, // 좌표 필드 추가
+    longitude: { type: Number, default: null }, // 좌표 필드 추가
     email: { type: String, default: '' },
     phoneNumber: { type: String, default: '' },
     hotelName: { type: String, default: '' },

@@ -201,7 +201,9 @@ app.use('/api/auth', authRoutes);
 app.use(
   '/api/customer',
   (req, res, next) => {
-    if (req.method === 'GET') {
+    // GET 요청 또는 특정 경로는 CSRF 검증 제외
+    const skipCsrfPaths = ['/check-duplicate', '/register', '/activate-account'];
+    if (req.method === 'GET' || skipCsrfPaths.includes(req.path)) {
       return next();
     }
     return verifyCsrfToken(req, res, next);

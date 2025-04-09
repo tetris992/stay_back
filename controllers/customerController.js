@@ -220,21 +220,10 @@ const getShortReservationNumber = (reservationId) => {
 };
 
 export const loginCustomer = async (req, res) => {
-  const { phoneNumber, password, name, email } = req.body;
+  const { phoneNumber } = req.body;
 
   if (!phoneNumber) {
     return res.status(400).json({ message: '전화번호는 필수입니다.' });
-  }
-
-  const trimmedPassword = typeof password === 'string' ? password.trim() : '';
-  const trimmedName = typeof name === 'string' ? name.trim() : '';
-  const trimmedEmail = typeof email === 'string' ? email.trim() : '';
-
-  if (!trimmedPassword && (trimmedName || trimmedEmail)) {
-    return res.status(400).json({
-      message:
-        '소셜 로그인은 아직 구현되지 않았습니다. 일반 로그인 시 비밀번호를 반드시 포함해주세요.',
-    });
   }
 
   try {
@@ -249,11 +238,13 @@ export const loginCustomer = async (req, res) => {
       });
     }
 
-    if (
-      !trimmedPassword ||
-      !(await customer.comparePassword(trimmedPassword))
-    ) {
-      return res.status(401).json({ message: '비밀번호가 올바르지 않습니다.' });
+    if (!customer.isActive) {
+      logger.warn(`Customer not activated: ${customer.phoneNumber}`);
+      return res.status(403).json({
+        message: '계정이 활성화되지 않았습니다. 약관 동의를 완료해주세요.',
+        redirectUrl: '/privacy-consent',
+        customerId: customer._id,
+      });
     }
 
     const token = generateCustomerToken(customer);
@@ -266,7 +257,7 @@ export const loginCustomer = async (req, res) => {
     res.status(200).json({
       token,
       refreshToken,
-      customer: { name: customer.name, phoneNumber, email: customer.email },
+      customer: { nickname: customer.nickname, phoneNumber, email: customer.email },
     });
   } catch (error) {
     logger.error(`Customer login error: ${error.message}`, error);
@@ -391,66 +382,48 @@ export const connectSocialAccount = async (req, res) => {
 };
 
 export const registerCustomer = async (req, res) => {
-  const { name, phoneNumber, email, password, agreements } = req.body;
+  const { nickname, phoneNumber, email, ageRange, name } = req.body;
 
-  // 필수 항목 검증
-  if (!name || !password) {
-    logger.warn(
-      `Missing required fields for registration: name=${name}, password=${password}`
-    );
-    return res.status(400).json({ message: '이름과 비밀번호는 필수입니다.' });
-  }
-
-  // 동의 항목 검증
-  if (!agreements || !agreements.terms || !agreements.privacy) {
-    logger.warn(
-      `Missing required agreements: terms=${agreements?.terms}, privacy=${agreements?.privacy}`
-    );
-    return res.status(400).json({ message: '필수 약관에 동의해야 합니다.' });
+  if (!phoneNumber) {
+    logger.warn(`Missing required field for registration: phoneNumber=${phoneNumber}`);
+    return res.status(400).json({ message: '전화번호는 필수입니다.' });
   }
 
   try {
     const existingCustomer = await Customer.findOne({
-      $or: [{ phoneNumber }, { email }],
+      $or: [{ phoneNumber }, { email }, { nickname }],
     });
     if (existingCustomer) {
       logger.warn(
-        `Duplicate phoneNumber or email: phoneNumber=${phoneNumber}, email=${email}`
+        `Duplicate nickname, phoneNumber, or email: nickname=${nickname}, phoneNumber=${phoneNumber}, email=${email}`
       );
       return res.status(409).json({
-        message: '이미 가입된 전화번호 또는 이메일입니다.',
+        message: '이미 가입된 닉네임, 전화번호 또는 이메일입니다.',
         details: {
+          nickname: existingCustomer.nickname === nickname ? '이미 사용 중인 닉네임입니다.' : null,
           phoneNumber: existingCustomer.phoneNumber === phoneNumber ? '이미 사용 중인 전화번호입니다.' : null,
           email: existingCustomer.email === email ? '이미 사용 중인 이메일입니다.' : null,
         },
       });
     }
 
-    let finalPhoneNumber = '01000000000';
-    if (phoneNumber) {
-      finalPhoneNumber = sanitizePhoneNumber(phoneNumber);
-    }
-
     const customer = new Customer({
-      name,
-      phoneNumber: finalPhoneNumber,
-      email,
-      password,
-      agreements: {
-        terms: agreements.terms,
-        privacy: agreements.privacy,
-        marketing: agreements.marketing || false,
-        agreedAt: new Date(),
-        termsVersion: '2025.04.08', // 현재 약관 버전
-      },
+      nickname: nickname || null,
+      phoneNumber,
+      email: email || null,
+      ageRange: ageRange || null,
+      name: name || null,
+      isActive: false,
     });
 
-    const token = generateCustomerToken(customer);
-    const refreshToken = generateRefreshToken(customer);
-    customer.refreshToken = refreshToken;
     await customer.save();
-    logger.info(`New customer registered: ${customer.email}`);
-    res.status(201).json({ token, refreshToken, customer });
+    logger.info(`New customer registered: ${customer.phoneNumber}`);
+
+    res.status(201).json({
+      message: '회원가입이 완료되었습니다. 약관 동의를 완료해주세요.',
+      customerId: customer._id,
+      redirectUrl: '/privacy-consent',
+    });
   } catch (error) {
     logger.error(`Customer registration error: ${error.message}`, error);
     res.status(500).json({
@@ -1450,34 +1423,93 @@ export const refreshCustomerToken = async (req, res) => {
 
 // 중복 체크 엔드포인트 추가
 export const checkDuplicate = async (req, res) => {
-  const { phoneNumber, email } = req.body;
+  logger.info(`checkDuplicate request body: ${JSON.stringify(req.body)}`); // 요청 본문 로그 추가
+  const { phoneNumber, email, nickname } = req.body;
 
-  if (!phoneNumber && !email) {
-    return res.status(400).json({ message: '전화번호 또는 이메일이 필요합니다.' });
+  if (!phoneNumber && !email && !nickname) {
+    logger.warn('No phoneNumber, email, or nickname provided for duplicate check');
+    return res.status(400).json({ message: '전화번호, 이메일, 또는 닉네임이 필요합니다.' });
   }
 
   try {
     const existingCustomer = await Customer.findOne({
-      $or: [{ phoneNumber }, { email }],
+      $or: [
+        { phoneNumber: phoneNumber || { $exists: false } },
+        { email: email || { $exists: false } },
+        { nickname: nickname || { $exists: false } },
+      ],
     });
 
     if (existingCustomer) {
       logger.warn(
-        `Duplicate check found: phoneNumber=${phoneNumber}, email=${email}`
+        `Duplicate check found: phoneNumber=${phoneNumber}, email=${email}, nickname=${nickname}`
       );
-      return res.status(200).json({
+      const response = {
         isDuplicate: true,
         details: {
           phoneNumber: existingCustomer.phoneNumber === phoneNumber ? '이미 사용 중인 전화번호입니다.' : null,
           email: existingCustomer.email === email ? '이미 사용 중인 이메일입니다.' : null,
+          nickname: existingCustomer.nickname === nickname ? '이미 사용 중인 닉네임입니다.' : null,
         },
-      });
+      };
+      logger.info(`Duplicate check response: ${JSON.stringify(response)}`);
+      return res.status(200).json(response);
     }
 
-    return res.status(200).json({ isDuplicate: false });
+    const response = { isDuplicate: false };
+    logger.info(`Duplicate check response: ${JSON.stringify(response)}`);
+    return res.status(200).json(response);
   } catch (error) {
     logger.error(`Duplicate check error: ${error.message}`, error);
     return res.status(500).json({
+      message: '서버 오류가 발생했습니다.',
+      error: error.message,
+    });
+  }
+};
+
+export const activateAccount = async (req, res) => {
+  logger.info(`activateAccount request received: ${JSON.stringify(req.body)}`);
+  const { customerId, agreements } = req.body;
+
+  if (!customerId || !agreements || !agreements.terms || !agreements.privacy) {
+    logger.warn(
+      `Missing required fields for account activation: customerId=${customerId}, agreements=${JSON.stringify(agreements)}`
+    );
+    return res.status(400).json({ message: '고객 ID와 필수 약관 동의는 필수입니다.' });
+  }
+
+  try {
+    const customer = await Customer.findById(customerId);
+    if (!customer) {
+      logger.warn(`Customer not found for activation: ${customerId}`);
+      return res.status(404).json({ message: '고객을 찾을 수 없습니다.' });
+    }
+
+    if (customer.isActive) {
+      logger.warn(`Customer already activated: ${customerId}`);
+      return res.status(400).json({ message: '이미 활성화된 계정입니다.' });
+    }
+
+    customer.agreements = {
+      terms: agreements.terms,
+      privacy: agreements.privacy,
+      marketing: agreements.marketing || false,
+      agreedAt: new Date(),
+      termsVersion: '2025.04.08',
+    };
+    customer.isActive = true;
+    await customer.save();
+
+    logger.info(`Customer account activated: ${customer.nickname}`);
+    res.status(200).json({
+      message: '계정이 활성화되었습니다. 로그인 페이지로 이동합니다.',
+      redirectUrl: '/login',
+    });
+  } catch (error) {
+    logger.error(`Account activation error: ${error.message}`, error);
+    console.error('Account activation error:', error); // 임시 콘솔 출력 추가
+    res.status(500).json({
       message: '서버 오류가 발생했습니다.',
       error: error.message,
     });
