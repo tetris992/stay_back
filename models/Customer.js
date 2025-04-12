@@ -13,11 +13,17 @@ const CustomerSchema = new mongoose.Schema(
     },
     phoneNumber: {
       type: String,
-      required: [true, '전화번호는 필수입니다.'],
       unique: true,
       trim: true,
+      required: [
+        function () {
+          return !this.socialLogin?.provider; // 소셜 로그인 사용자는 phoneNumber 필수 아님
+        },
+        '전화번호는 필수입니다.',
+      ],
       validate: {
         validator: function (v) {
+          if (this.socialLogin?.provider) return true; // 소셜 로그인 사용자는 유효성 검사 건너뜀
           const cleaned = v.replace(/\D/g, '');
           return cleaned.length >= 10 && cleaned.length <= 11;
         },
@@ -114,7 +120,7 @@ const CustomerSchema = new mongoose.Schema(
 
 // 전화번호 형식 정규화
 CustomerSchema.pre('save', function (next) {
-  if (this.isModified('phoneNumber') && this.phoneNumber) {
+  if (this.isModified('phoneNumber') && this.phoneNumber && !this.socialLogin?.provider) {
     let cleaned = this.phoneNumber.replace(/\D/g, '');
     if (cleaned.length < 10 || cleaned.length > 11) {
       return next(new Error('전화번호는 10~11자리 숫자여야 합니다.'));

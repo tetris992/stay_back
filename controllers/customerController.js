@@ -96,7 +96,7 @@ const generateRefreshToken = (customer) => {
 
 export const loginCustomerSocial = async (req, res) => {
   const { provider } = req.params;
-  const { providerId, name, email, phoneNumber, idToken } = req.body;
+  const { code } = req.body;
 
   if (provider !== 'kakao') {
     logger.warn(`Invalid social login provider: ${provider}`);
@@ -105,89 +105,78 @@ export const loginCustomerSocial = async (req, res) => {
       .json({ message: '현재는 카카오 로그인만 지원됩니다.' });
   }
 
-  const hotelSettings = await HotelSettingsModel.findOne(
-    {},
-    'socialLoginSettings'
-  ).lean();
-  if (!hotelSettings || !hotelSettings.socialLoginSettings?.kakao?.enabled) {
-    logger.warn(`Kakao login is disabled`);
-    return res
-      .status(403)
-      .json({ message: 'Kakao 로그인은 현재 비활성화되어 있습니다.' });
-  }
-
-  const trimmedProviderId =
-    typeof providerId === 'string' ? providerId.trim() : '';
-  const trimmedName = typeof name === 'string' ? name.trim() : '';
-  const trimmedEmail = typeof email === 'string' ? email.trim() : '';
-  const trimmedPhoneNumber =
-    typeof phoneNumber === 'string' ? phoneNumber.trim() : '';
-
-  if (!trimmedProviderId || !trimmedName || !trimmedEmail) {
-    logger.warn(
-      `Missing required fields for social login: providerId=${providerId}, name=${name}, email=${email}`
-    );
-    return res
-      .status(400)
-      .json({ message: 'providerId, name, email은 필수입니다.' });
+  if (!code) {
+    logger.warn(`Missing code for Kakao login`);
+    return res.status(400).json({ message: 'code는 필수입니다.' });
   }
 
   try {
-    // 카카오 REST API 키를 사용하여 사용자 정보 검증 (선택 사항)
-    if (idToken) {
-      const KAKAO_REST_API_KEY = process.env.REACT_APP_KAKAO_REST_API_KEY;
-      const response = await axios.get('https://kapi.kakao.com/v2/user/me', {
+    const KAKAO_REST_API_KEY = process.env.REACT_APP_KAKAO_REST_API_KEY;
+    const redirectUri =
+      process.env.NODE_ENV === 'production'
+        ? 'https://danjam.in/auth/kakao/callback'
+        : 'http://localhost:3000/auth/kakao/callback';
+    const tokenResponse = await axios.post(
+      'https://kauth.kakao.com/oauth/token',
+      new URLSearchParams({
+        grant_type: 'authorization_code',
+        client_id: KAKAO_REST_API_KEY,
+        redirect_uri: redirectUri,
+        code,
+      }),
+      {
         headers: {
-          Authorization: `Bearer ${idToken}`,
-          'Content-Type': 'application/x-www-form-urlencoded;charset=utf-8',
+          'Content-Type': 'application/x-www-form-urlencoded',
         },
-      });
-      logger.info(`Kakao user info verified: ${response.data.id}`);
-      if (response.data.id.toString() !== trimmedProviderId) {
-        logger.warn(
-          `Provider ID mismatch: received=${trimmedProviderId}, verified=${response.data.id}`
-        );
-        return res
-          .status(400)
-          .json({ message: '카카오 사용자 정보가 일치하지 않습니다.' });
       }
+    );
+
+    const accessToken = tokenResponse.data.access_token;
+    logger.info(`Kakao access token obtained: ${accessToken}`);
+
+    const userResponse = await axios.get('https://kapi.kakao.com/v2/user/me', {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/x-www-form-urlencoded;charset=utf-8',
+      },
+    });
+
+    const userInfo = userResponse.data;
+    logger.info(`Kakao user info: ${JSON.stringify(userInfo)}`); // 디버깅 로그 추가
+
+    const providerId = userInfo.id.toString();
+    const name = userInfo.properties?.nickname || '알 수 없음';
+    const email = userInfo.kakao_account?.email || null;
+
+    if (!email) {
+      logger.warn('Kakao user email not provided. User may not have agreed to share email.');
     }
 
     let customer = await Customer.findOne({
       'socialLogin.provider': provider,
-      'socialLogin.providerId': trimmedProviderId,
+      'socialLogin.providerId': providerId,
     });
 
     if (!customer) {
-      // 회원가입: 새로운 고객 생성
       customer = new Customer({
-        name: trimmedName,
-        email: trimmedEmail,
-        phoneNumber:
-          trimmedPhoneNumber || `social-${provider}-${trimmedProviderId}`,
-        socialLogin: { provider, providerId: trimmedProviderId },
+        name,
+        email,
+        socialLogin: { provider, providerId },
+        isActive: true,
       });
       await customer.save();
       logger.info(
-        `New customer created via social login: ${customer.email}, provider: ${provider}`
+        `New customer created via social login: ${customer.email || 'no email'}, provider: ${provider}`
       );
     } else {
-      // 기존 고객 정보 업데이트
-      if (trimmedEmail && !customer.email.includes('@example.com')) {
-        customer.email = trimmedEmail;
+      if (email && !customer.email?.includes('@example.com')) {
+        customer.email = email;
       }
-      if (trimmedPhoneNumber) {
-        customer.phoneNumber = trimmedPhoneNumber;
-      }
-      customer.name = trimmedName;
-    }
-
-    if (
-      idToken &&
-      hotelSettings?.socialLoginSettings?.kakao?.openIdConnectEnabled
-    ) {
-      logger.info(`Kakao ID Token received: ${idToken}`);
-      customer.openIdData = { idToken };
+      customer.name = name;
+      await customer.save();
+      logger.info(
+        `Customer updated via social login: ${customer.email || 'no email'}, provider: ${provider}`
+      );
     }
 
     const token = generateCustomerToken(customer);
@@ -195,10 +184,14 @@ export const loginCustomerSocial = async (req, res) => {
     customer.refreshToken = refreshToken;
     await customer.save();
     logger.info(
-      `Customer logged in via social: ${customer.email}, provider: ${provider}, refreshToken: ${refreshToken}`
+      `Customer logged in via social: ${customer.email || 'no email'}, provider: ${provider}, refreshToken: ${refreshToken}`
     );
 
-    const redirectUrl = `/auth/${provider}/callback?token=${token}&refreshToken=${refreshToken}&customer=${encodeURIComponent(
+    const redirectUrl = `${
+      process.env.NODE_ENV === 'production'
+        ? 'https://danjam.in'
+        : 'http://localhost:3000'
+    }/auth/${provider}/callback?token=${token}&refreshToken=${refreshToken}&customer=${encodeURIComponent(
       JSON.stringify({
         name: customer.name,
         phoneNumber: customer.phoneNumber,
@@ -541,7 +534,7 @@ export const getHotelList = async (req, res) => {
 
     const hotelSettings = await HotelSettingsModel.find(
       {},
-      'hotelId checkInTime checkOutTime amenities'
+      'hotelId checkInTime checkOutTime amenities latitude longitude' // latitude와 longitude 추가
     ).lean();
     if (!hotelSettings || hotelSettings.length === 0) {
       return res.status(404).json({ message: '등록된 호텔이 없습니다.' });
@@ -573,9 +566,12 @@ export const getHotelList = async (req, res) => {
         checkInTime: settingsMap[hotel.hotelId]?.checkInTime || 'N/A',
         checkOutTime: settingsMap[hotel.hotelId]?.checkOutTime || 'N/A',
         amenities,
+        latitude: settingsMap[hotel.hotelId]?.latitude || null, // 좌표 추가
+        longitude: settingsMap[hotel.hotelId]?.longitude || null, // 좌표 추가
       };
     });
 
+    console.log('[getHotelList] Returning hotel list:', hotelList);
     res.status(200).json(hotelList);
   } catch (error) {
     logger.error(`Error fetching hotel list: ${error.message}`, error);
@@ -775,7 +771,7 @@ export const getCustomerHotelSettings = async (req, res) => {
   try {
     const hotelSettings = await HotelSettingsModel.findOne({ hotelId })
       .select(
-        'roomTypes photos basicInfo checkInTime checkOutTime gridSettings'
+        'roomTypes photos basicInfo checkInTime checkOutTime gridSettings latitude longitude' // latitude와 longitude 추가
       )
       .lean();
 
@@ -797,7 +793,7 @@ export const getCustomerHotelSettings = async (req, res) => {
         ) || [],
     }));
 
-    return res.status(200).json({
+    const response = {
       hotelId,
       hotelName: hotel?.hotelName || 'Unknown Hotel',
       address: hotel?.address || 'Unknown Address',
@@ -807,7 +803,12 @@ export const getCustomerHotelSettings = async (req, res) => {
       photos: hotelSettings.photos,
       basicInfo: hotelSettings.basicInfo,
       gridSettings: hotelSettings.gridSettings,
-    });
+      latitude: hotelSettings.latitude || null, // 좌표 추가
+      longitude: hotelSettings.longitude || null, // 좌표 추가
+    };
+
+    console.log('[getCustomerHotelSettings] Returning data for hotelId:', hotelId, response);
+    return res.status(200).json(response);
   } catch (error) {
     logger.error(
       `Error fetching customer hotel settings: ${error.message}`,
@@ -1022,6 +1023,8 @@ export const getReservationHistory = async (req, res) => {
           checkInTime: hotelSettings ? hotelSettings.checkInTime : 'Unknown',
           checkOutTime: hotelSettings ? hotelSettings.checkOutTime : 'Unknown',
           visitCount: visitCount || 1,
+          latitude: hotelSettings ? hotelSettings.latitude : null, // 좌표 추가
+          longitude: hotelSettings ? hotelSettings.longitude : null, // 좌표 추가
         };
         history.push(enrichedReservation);
       }
@@ -1366,7 +1369,7 @@ export const getSocialLoginSettings = async (req, res) => {
         hotelId: 'default',
         socialLoginSettings: {
           kakao: {
-            enabled: false,
+            enabled: true, // 기본값을 true로 변경
             openIdConnectEnabled: false,
           },
         },
